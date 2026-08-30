@@ -219,6 +219,30 @@ public enum Personality {
         return all[ThreadLocalRandom.current().nextInt(all.length)];
     }
 
+    /** Ticks before they notice a gun on them. Faster minds, slower drunks. */
+    public int noticeDelayTicks() {
+        return switch (this) {
+            case PARANOID_LONER -> 3;
+            case NERVOUS_SCAV, JITTERY_TEEN -> 5;
+            case BITTER_TRADER, CYNICAL_SMOKER -> 7;
+            case QUIET_MEDIC, RELIGIOUS_SURVIVOR -> 8;
+            case TIRED_FATHER, STOIC_FARMER -> 11;
+            case FRIENDLY_DRUNK -> 16;
+        };
+    }
+
+    /** Hold the line instead of backing off when aimed at. */
+    public boolean standsGround() {
+        return switch (this) {
+            case TIRED_FATHER, STOIC_FARMER, BITTER_TRADER, CYNICAL_SMOKER, PARANOID_LONER -> true;
+            default -> false;
+        };
+    }
+
+    public boolean chatty() {
+        return this == FRIENDLY_DRUNK || this == BITTER_TRADER || this == CYNICAL_SMOKER;
+    }
+
     private static String pick(List<String> lines, String avoid) {
         if (lines.size() == 1) {
             return lines.get(0);

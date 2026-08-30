@@ -9,8 +9,6 @@ import net.minenite.npcs.corpse.CorpseOpen;
 import net.minenite.npcs.corpse.CorpseSpawner;
 import net.minenite.npcs.skin.SkinService;
 import net.minenite.npcs.tab.TabListPackets;
-import net.minenite.warzplugin.WarzPlugin;
-import io.papermc.paper.entity.LookAnchor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
@@ -19,7 +17,6 @@ import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Pose;
-import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
@@ -27,8 +24,8 @@ import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EntityEquipment;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.persistence.PersistentDataType;
-import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
@@ -37,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
 
 public final class NpcManager implements Listener {
     private final NpcsPlugin plugin;
@@ -46,6 +42,8 @@ public final class NpcManager implements Listener {
     private final TabListPackets tab;
     private final LoadoutService loadouts;
     private final CorpseSpawner corpses;
+    private final GunPoseBridge poses = new GunPoseBridge();
+    private final CivilianBrain brain;
     private final NamespacedKey npcKey;
     private final Map<UUID, CivilianNpc> byId = new ConcurrentHashMap<>();
     private BukkitTask tick;
@@ -58,6 +56,7 @@ public final class NpcManager implements Listener {
         this.loadouts = new LoadoutService(plugin);
         CorpseOpen opens = new CorpseOpen(plugin);
         this.corpses = new CorpseSpawner(plugin, opens);
+        this.brain = new CivilianBrain(plugin, talk, poses);
         this.npcKey = new NamespacedKey(plugin, "civilian");
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
         plugin.getServer().getPluginManager().registerEvents(opens, plugin);
@@ -71,6 +70,7 @@ public final class NpcManager implements Listener {
         if (tick != null) {
             tick.cancel();
         }
+        poses.clearAll();
         tab.hideAll(List.copyOf(byId.values()));
         for (CivilianNpc npc : List.copyOf(byId.values())) {
             removeBody(npc, false);
@@ -84,7 +84,7 @@ public final class NpcManager implements Listener {
         UUID id = UUID.nameUUIDFromBytes(("npc:" + name + ":" + System.nanoTime()).getBytes());
         LoadoutService.Kit kit = loadouts.roll();
         CivilianNpc npc = new CivilianNpc(id, name, personality, skins.textures(),
-                kit.gun(), kit.mag(), extras(kit));
+                kit.gun(), kit.spare(), extras(kit));
         PlayerProfile profile = skins.profileFor(id, name);
         Location spawnAt = WanderEngine.ground(at);
         if (spawnAt == null) {
@@ -99,7 +99,7 @@ public final class NpcManager implements Listener {
             mannequin.setGravity(false);
             mannequin.setAI(false);
             mannequin.setCollidable(true);
-            mannequin.setImmovable(true);
+            mannequin.setImmovable(false);
             mannequin.customName(Component.text(name));
             mannequin.setCustomNameVisible(true);
             mannequin.setDescription(null);
@@ -107,18 +107,41 @@ public final class NpcManager implements Listener {
                 mannequin.setProfile(ResolvableProfile.resolvableProfile(profile));
             } catch (Exception ignored) {
             }
+            try {
+                var parts = mannequin.getSkinParts();
+                parts.setCapeEnabled(true);
+                parts.setHatsEnabled(true);
+                parts.setJacketEnabled(true);
+                parts.setLeftSleeveEnabled(true);
+                parts.setRightSleeveEnabled(true);
+                parts.setLeftPantsEnabled(true);
+                parts.setRightPantsEnabled(true);
+                mannequin.setSkinParts(parts);
+            } catch (Exception ignored) {
+            }
+            try {
+                mannequin.setPose(Pose.STANDING, false);
+            } catch (Exception ignored) {
+            }
             mannequin.setHealth(Math.min(mannequin.getMaxHealth(),
                     plugin.getConfig().getDouble("civilian.health", 16)));
-            EntityEquipment equipment = mannequin.getEquipment();
-            if (equipment != null) {
-                equipment.setItemInMainHand(kit.gun());
-                equipment.setItemInOffHand(kit.mag());
-            }
             mannequin.getPersistentDataContainer().set(npcKey, PersistentDataType.STRING, id.toString());
         });
         npc.bind(body);
-        npc.setIdleLeft(20 + ThreadLocalRandom.current().nextInt(40));
         byId.put(id, npc);
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (!body.isValid()) {
+                return;
+            }
+            EntityEquipment equipment = body.getEquipment();
+            if (equipment != null && kit.gun() != null) {
+                equipment.setItem(EquipmentSlot.HAND, kit.gun().clone());
+                equipment.setItem(EquipmentSlot.OFF_HAND, null);
+            }
+            poses.set(id, true, false);
+            poses.set(body.getUniqueId(), true, false);
+            body.addScoreboardTag("pgm_gun");
+        });
         for (Player viewer : plugin.getServer().getOnlinePlayers()) {
             tab.show(viewer, npc);
         }
@@ -158,170 +181,20 @@ public final class NpcManager implements Listener {
             }
             Mannequin body = body(npc);
             if (body == null || !body.isValid()) {
+                poses.clear(npc.id());
                 byId.remove(npc.id());
                 continue;
             }
-            Player aimer = aimerOn(body);
-            if (aimer != null) {
-                handleAimed(npc, body, aimer);
-                continue;
-            }
-            npc.tickAimHold();
-            if (npc.mood() == CivilianNpc.Mood.AIMED && npc.aimHold() <= 0) {
-                npc.setMood(CivilianNpc.Mood.IDLE);
-                npc.setIdleLeft(30 + ThreadLocalRandom.current().nextInt(50));
-                lowerGun(body);
-            }
-            if (npc.mood() == CivilianNpc.Mood.WALK) {
-                Location next = npc.stepWalk();
-                if (next != null) {
-                    Location use = WanderEngine.keepXZ(next);
-                    if (use == null) {
-                        use = next;
-                    }
-                    use.setYaw(npc.lookYaw());
-                    use.setPitch(0f);
-                    body.teleport(use);
-                    face(body, npc.lookYaw(), 0f);
-                }
-                continue;
-            }
-            npc.decIdle();
-            npc.idleGlance();
-            face(body, npc.lookYaw(), npc.lookPitch());
-            if (npc.idleLeft() <= 0) {
-                WanderEngine.plan(npc, body.getLocation(),
-                        plugin.getConfig().getDouble("civilian.wander-min", 7),
-                        plugin.getConfig().getDouble("civilian.wander-max", 22),
-                        plugin.getConfig().getDouble("civilian.walk-speed", 0.13));
-            }
-            maybeAmbient(npc, body);
-        }
-    }
-
-    private void handleAimed(CivilianNpc npc, Mannequin body, Player aimer) {
-        npc.setAimedBy(aimer.getUniqueId());
-        npc.setMood(CivilianNpc.Mood.AIMED);
-        npc.clearWalk();
-        aimGun(body, aimer);
-        if (!npc.aimSpoken() && npc.canTalk()) {
-            npc.markAimSpoken();
-            talk.aimedAt(npc, aimer);
-        }
-    }
-
-    private void aimGun(Mannequin body, Player aimer) {
-        Location target = aimer.getEyeLocation();
-        try {
-            body.lookAt(target.getX(), target.getY(), target.getZ(), LookAnchor.EYES);
-        } catch (Exception ignored) {
-        }
-        Location from = body.getEyeLocation();
-        org.bukkit.util.Vector delta = target.toVector().subtract(from.toVector());
-        float yaw = (float) Math.toDegrees(Math.atan2(-delta.getX(), delta.getZ()));
-        double horiz = Math.sqrt(delta.getX() * delta.getX() + delta.getZ() * delta.getZ());
-        float pitch = (float) Math.toDegrees(-Math.atan2(delta.getY(), Math.max(0.001, horiz)));
-        face(body, yaw, pitch);
-        if (Mannequin.validPoses().contains(Pose.SHOOTING)) {
-            body.setPose(Pose.SHOOTING);
-        } else if (Mannequin.validPoses().contains(Pose.SNEAKING)) {
-            body.setPose(Pose.SNEAKING);
-        }
-        try {
-            body.startUsingItem(EquipmentSlot.HAND);
-            body.setActiveItemRemainingTime(Math.max(10, body.getActiveItemRemainingTime()));
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void lowerGun(Mannequin body) {
-        try {
-            body.clearActiveItem();
-        } catch (Exception ignored) {
-        }
-        if (Mannequin.validPoses().contains(Pose.STANDING)) {
-            body.setPose(Pose.STANDING);
-        }
-    }
-
-    private static void face(Mannequin body, float yaw, float pitch) {
-        body.setRotation(yaw, pitch);
-        try {
-            body.setBodyYaw(yaw);
-        } catch (Exception ignored) {
-        }
-    }
-
-    private Player aimerOn(Mannequin body) {
-        double range = plugin.getConfig().getDouble("civilian.aim-range", 42);
-        double need = plugin.getConfig().getDouble("civilian.aim-dot", 0.94);
-        Player best = null;
-        double bestDot = need;
-        for (Player player : body.getWorld().getPlayers()) {
-            if (!player.isOnline() || player.getWorld() != body.getWorld()) {
-                continue;
-            }
-            if (player.getLocation().distanceSquared(body.getLocation()) > range * range) {
-                continue;
-            }
-            if (!holdingGun(player)) {
-                continue;
-            }
-            Location eye = player.getEyeLocation();
-            org.bukkit.util.Vector dir = eye.getDirection();
-            if (dir.lengthSquared() < 1.0e-6) {
-                continue;
-            }
-            dir.normalize();
-            org.bukkit.util.Vector to = body.getEyeLocation().toVector().subtract(eye.toVector());
-            if (to.lengthSquared() < 1.0e-6) {
-                continue;
-            }
-            double dist = to.length();
-            to.multiply(1.0 / dist);
-            double dot = dir.dot(to);
-            if (dot < bestDot) {
-                continue;
-            }
-            if (body.getBoundingBox().expand(0.35).rayTrace(eye.toVector(), dir, dist + 1.0) == null) {
-                continue;
-            }
-            bestDot = dot;
-            best = player;
-        }
-        return best;
-    }
-
-    private boolean holdingGun(Player player) {
-        Plugin warz = Bukkit.getPluginManager().getPlugin("WarzPlugin");
-        if (warz instanceof WarzPlugin plugin && plugin.items() != null) {
-            return plugin.items().isGunItem(player.getInventory().getItemInMainHand());
-        }
-        return !player.getInventory().getItemInMainHand().getType().isAir();
-    }
-
-    private void maybeAmbient(CivilianNpc npc, Mannequin body) {
-        if (ThreadLocalRandom.current().nextInt(400) != 0 || !npc.canTalk()) {
-            return;
-        }
-        Player near = null;
-        double best = 14 * 14;
-        for (Player player : body.getWorld().getPlayers()) {
-            double d = player.getLocation().distanceSquared(body.getLocation());
-            if (d < best) {
-                best = d;
-                near = player;
-            }
-        }
-        if (near != null) {
-            talk.ambient(npc, near);
+            brain.tick(npc, body);
         }
     }
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        plugin.getServer().getScheduler().runTaskLater(plugin,
-                () -> tab.showAll(event.getPlayer(), all()), 15L);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            tab.showAll(event.getPlayer(), all());
+            poses.syncViewer(event.getPlayer());
+        }, 20L);
     }
 
     @EventHandler
@@ -340,8 +213,12 @@ public final class NpcManager implements Listener {
             return;
         }
         Player killer = killer(event.getDamager());
-        if (killer != null && npc.canTalk() && npc.mood() != CivilianNpc.Mood.AIMED) {
+        if (killer != null && npc.canTalk() && npc.state() != CivilianNpc.State.AIM) {
             talk.aimedAt(npc, killer);
+        }
+        if (npc.state() != CivilianNpc.State.AIM && npc.state() != CivilianNpc.State.FLEE) {
+            npc.setState(CivilianNpc.State.WARY);
+            npc.setWaryLeft(70);
         }
     }
 
@@ -358,6 +235,10 @@ public final class NpcManager implements Listener {
         npc.markDead();
         if (killer != null) {
             talk.dying(npc, killer);
+        }
+        poses.clear(npc.id());
+        if (event.getEntity() != null) {
+            poses.clear(event.getEntity().getUniqueId());
         }
         corpses.spawn(npc, at, skins.profileFor(npc.id(), npc.name()));
         removeBody(npc, true);
@@ -379,6 +260,7 @@ public final class NpcManager implements Listener {
     }
 
     private void removeBody(CivilianNpc npc, boolean hideTab) {
+        poses.clear(npc.id());
         if (hideTab) {
             for (Player viewer : plugin.getServer().getOnlinePlayers()) {
                 tab.hide(viewer, npc);
@@ -386,6 +268,7 @@ public final class NpcManager implements Listener {
         }
         Mannequin body = body(npc);
         if (body != null) {
+            poses.clear(body.getUniqueId());
             body.remove();
         }
         byId.remove(npc.id());
@@ -430,8 +313,8 @@ public final class NpcManager implements Listener {
 
     private static List<org.bukkit.inventory.ItemStack> extras(LoadoutService.Kit kit) {
         List<org.bukkit.inventory.ItemStack> extras = new ArrayList<>();
-        if (kit.spare() != null) {
-            extras.add(kit.spare());
+        if (kit.mag() != null) {
+            extras.add(kit.mag());
         }
         extras.addAll(kit.extras());
         return extras;
