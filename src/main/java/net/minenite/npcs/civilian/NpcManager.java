@@ -18,9 +18,11 @@ import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Pose;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EntityEquipment;
@@ -42,7 +44,7 @@ public final class NpcManager implements Listener {
     private final TabListPackets tab;
     private final LoadoutService loadouts;
     private final CorpseSpawner corpses;
-    private final GunPoseBridge poses = new GunPoseBridge();
+    private final GunPoseBridge poses;
     private final CivilianBrain brain;
     private final NamespacedKey npcKey;
     private final Map<UUID, CivilianNpc> byId = new ConcurrentHashMap<>();
@@ -56,8 +58,9 @@ public final class NpcManager implements Listener {
         this.loadouts = new LoadoutService(plugin);
         CorpseOpen opens = new CorpseOpen(plugin);
         this.corpses = new CorpseSpawner(plugin, opens);
+        this.poses = new GunPoseBridge(plugin);
         this.brain = new CivilianBrain(plugin, talk, poses);
-        this.npcKey = new NamespacedKey(plugin, "civilian");
+        this.npcKey = NpcBodies.key();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
         plugin.getServer().getPluginManager().registerEvents(opens, plugin);
     }
@@ -71,6 +74,7 @@ public final class NpcManager implements Listener {
             tick.cancel();
         }
         poses.clearAll();
+        poses.shutdown();
         tab.hideAll(List.copyOf(byId.values()));
         for (CivilianNpc npc : List.copyOf(byId.values())) {
             removeBody(npc, false);
@@ -91,7 +95,42 @@ public final class NpcManager implements Listener {
             spawnAt = at.clone();
         }
         Location place = spawnAt;
-        Mannequin body = place.getWorld().spawn(place, Mannequin.class, mannequin -> {
+        Player fake = FakePlayerFactory.spawn(plugin, place, id, name, skins.textures());
+        LivingEntity body;
+        boolean fakePlayer;
+        if (fake != null) {
+            mark(fake, id);
+            body = fake;
+            fakePlayer = true;
+        } else {
+            body = spawnMannequin(place, id, name, profile);
+            fakePlayer = false;
+            plugin.getLogger().warning("Civilian " + name + " fell back to a mannequin body.");
+        }
+        npc.bind(body, fakePlayer);
+        byId.put(id, npc);
+        LivingEntity spawned = body;
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (!spawned.isValid()) {
+                return;
+            }
+            putGun(spawned, kit);
+            poses.set(spawned.getUniqueId(), true, false);
+            if (!spawned.getUniqueId().equals(id)) {
+                poses.set(id, true, false);
+            }
+            spawned.addScoreboardTag("pgm_gun");
+        });
+        for (Player viewer : plugin.getServer().getOnlinePlayers()) {
+            if (!NpcBodies.isNpc(viewer)) {
+                tab.show(viewer, npc);
+            }
+        }
+        return npc;
+    }
+
+    private Mannequin spawnMannequin(Location place, UUID id, String name, PlayerProfile profile) {
+        return place.getWorld().spawn(place, Mannequin.class, mannequin -> {
             mannequin.setPersistent(false);
             mannequin.setRemoveWhenFarAway(false);
             mannequin.setInvulnerable(false);
@@ -125,34 +164,39 @@ public final class NpcManager implements Listener {
             }
             mannequin.setHealth(Math.min(mannequin.getMaxHealth(),
                     plugin.getConfig().getDouble("civilian.health", 16)));
-            mannequin.getPersistentDataContainer().set(npcKey, PersistentDataType.STRING, id.toString());
+            mark(mannequin, id);
         });
-        npc.bind(body);
-        byId.put(id, npc);
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
-            if (!body.isValid()) {
-                return;
-            }
-            EntityEquipment equipment = body.getEquipment();
-            if (equipment != null && kit.gun() != null) {
-                equipment.setItem(EquipmentSlot.HAND, kit.gun().clone());
-                equipment.setItem(EquipmentSlot.OFF_HAND, null);
-            }
-            poses.set(id, true, false);
-            poses.set(body.getUniqueId(), true, false);
-            body.addScoreboardTag("pgm_gun");
-        });
-        for (Player viewer : plugin.getServer().getOnlinePlayers()) {
-            tab.show(viewer, npc);
+    }
+
+    private void mark(LivingEntity body, UUID id) {
+        body.getPersistentDataContainer().set(npcKey, PersistentDataType.STRING, id.toString());
+        body.addScoreboardTag("minenite_npc");
+        body.addScoreboardTag("pgm_gun");
+        body.setPersistent(false);
+        body.setRemoveWhenFarAway(false);
+    }
+
+    private void putGun(LivingEntity body, LoadoutService.Kit kit) {
+        if (kit.gun() == null) {
+            return;
         }
-        return npc;
+        if (body instanceof Player player) {
+            player.getInventory().setItemInMainHand(kit.gun().clone());
+            player.getInventory().setItemInOffHand(null);
+            player.updateInventory();
+        }
+        EntityEquipment equipment = body.getEquipment();
+        if (equipment != null) {
+            equipment.setItem(EquipmentSlot.HAND, kit.gun().clone());
+            equipment.setItem(EquipmentSlot.OFF_HAND, null);
+        }
     }
 
     public int removeNear(Location at, double range) {
         int n = 0;
         double rangeSq = range * range;
         for (CivilianNpc npc : List.copyOf(byId.values())) {
-            Mannequin body = body(npc);
+            LivingEntity body = NpcBodies.living(npc);
             if (body == null || body.getLocation().distanceSquared(at) > rangeSq) {
                 continue;
             }
@@ -179,8 +223,8 @@ public final class NpcManager implements Listener {
             if (!npc.alive()) {
                 continue;
             }
-            Mannequin body = body(npc);
-            if (body == null || !body.isValid()) {
+            LivingEntity body = NpcBodies.living(npc);
+            if (body == null || !body.isValid() || body.isDead()) {
                 poses.clear(npc.id());
                 byId.remove(npc.id());
                 continue;
@@ -189,16 +233,26 @@ public final class NpcManager implements Listener {
         }
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onJoin(PlayerJoinEvent event) {
+        if (NpcBodies.isNpc(event.getPlayer())) {
+            event.joinMessage(null);
+            return;
+        }
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
             tab.showAll(event.getPlayer(), all());
             poses.syncViewer(event.getPlayer());
-        }, 20L);
+        }, 15L);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () ->
+                poses.syncViewer(event.getPlayer()), 40L);
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onQuit(PlayerQuitEvent event) {
+        if (NpcBodies.isNpc(event.getPlayer())) {
+            event.quitMessage(null);
+            return;
+        }
         for (CivilianNpc npc : byId.values()) {
             if (event.getPlayer().getUniqueId().equals(npc.aimedBy())) {
                 npc.setAimedBy(null);
@@ -213,60 +267,66 @@ public final class NpcManager implements Listener {
             return;
         }
         Player killer = killer(event.getDamager());
-        if (killer != null && npc.canTalk() && npc.state() != CivilianNpc.State.AIM) {
-            talk.aimedAt(npc, killer);
+        LivingEntity body = event.getEntity() instanceof LivingEntity living ? living : NpcBodies.living(npc);
+        if (body != null) {
+            brain.hurt(npc, body, killer);
         }
-        if (npc.state() != CivilianNpc.State.AIM && npc.state() != CivilianNpc.State.FLEE) {
-            npc.setState(CivilianNpc.State.WARY);
-            npc.setWaryLeft(70);
+        if (killer != null && npc.canTalk()) {
+            talk.aimedAt(npc, killer);
         }
     }
 
     @EventHandler
     public void onDeath(EntityDeathEvent event) {
+        die(of(event.getEntity()), event.getEntity(), event.getEntity().getKiller(), event);
+    }
+
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent event) {
         CivilianNpc npc = of(event.getEntity());
         if (npc == null) {
             return;
         }
+        event.setDeathMessage(null);
         event.getDrops().clear();
         event.setDroppedExp(0);
-        Location at = event.getEntity().getLocation();
-        Player killer = event.getEntity().getKiller();
+        die(npc, event.getEntity(), event.getEntity().getKiller(), null);
+    }
+
+    private void die(CivilianNpc npc, LivingEntity body, Player killer, EntityDeathEvent drops) {
+        if (npc == null || !npc.alive()) {
+            return;
+        }
+        if (drops != null) {
+            drops.getDrops().clear();
+            drops.setDroppedExp(0);
+        }
+        Location at = body.getLocation();
         npc.markDead();
         if (killer != null) {
             talk.dying(npc, killer);
         }
         poses.clear(npc.id());
-        if (event.getEntity() != null) {
-            poses.clear(event.getEntity().getUniqueId());
-        }
+        poses.clear(body.getUniqueId());
         corpses.spawn(npc, at, skins.profileFor(npc.id(), npc.name()));
         removeBody(npc, true);
     }
 
     private CivilianNpc of(Entity entity) {
-        if (entity == null) {
-            return null;
-        }
-        String raw = entity.getPersistentDataContainer().get(npcKey, PersistentDataType.STRING);
-        if (raw == null) {
-            return null;
-        }
-        try {
-            return byId.get(UUID.fromString(raw));
-        } catch (IllegalArgumentException ignored) {
-            return null;
-        }
+        UUID id = NpcBodies.npcId(entity);
+        return id == null ? null : byId.get(id);
     }
 
     private void removeBody(CivilianNpc npc, boolean hideTab) {
         poses.clear(npc.id());
         if (hideTab) {
             for (Player viewer : plugin.getServer().getOnlinePlayers()) {
-                tab.hide(viewer, npc);
+                if (!NpcBodies.isNpc(viewer)) {
+                    tab.hide(viewer, npc);
+                }
             }
         }
-        Mannequin body = body(npc);
+        LivingEntity body = NpcBodies.living(npc);
         if (body != null) {
             poses.clear(body.getUniqueId());
             body.remove();
@@ -274,16 +334,8 @@ public final class NpcManager implements Listener {
         byId.remove(npc.id());
     }
 
-    private Mannequin body(CivilianNpc npc) {
-        if (npc.entityId() == null) {
-            return null;
-        }
-        Entity entity = Bukkit.getEntity(npc.entityId());
-        return entity instanceof Mannequin mannequin ? mannequin : null;
-    }
-
     private static Player killer(Entity damager) {
-        if (damager instanceof Player player) {
+        if (damager instanceof Player player && NpcBodies.realPlayer(player)) {
             return player;
         }
         if (damager instanceof LivingEntity living && living.getKiller() != null) {

@@ -2,7 +2,7 @@ package net.minenite.npcs.civilian;
 
 import net.minenite.npcs.skin.SkinService;
 import org.bukkit.Location;
-import org.bukkit.entity.Mannequin;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
@@ -12,7 +12,8 @@ import java.util.UUID;
 
 public final class CivilianNpc {
     public enum State {
-        STAND, SCAN, WALK, WATCH, WARY, AIM, BACKPEDAL, FLEE
+        STAND, SCAN, WALK, WATCH, WARY, DRAW, AIM, CIRCLE, HOLSTER,
+        BACKPEDAL, FLEE, FLINCH, INSPECT, COVER
     }
 
     private final UUID id;
@@ -23,6 +24,7 @@ public final class CivilianNpc {
     private final ItemStack gun;
     private final ItemStack spareMag;
     private UUID entityId;
+    private boolean fakePlayer;
     private State state = State.STAND;
     private Location walkFrom;
     private Location walkVia;
@@ -48,6 +50,15 @@ public final class CivilianNpc {
     private int nextDecision;
     private UUID watching;
     private byte poseFlags;
+    private int drawLeft;
+    private int holsterLeft;
+    private int flinchLeft;
+    private int inspectLeft;
+    private int coverLeft;
+    private int circleLeft;
+    private UUID rememberedAimer;
+    private long rememberUntil;
+    private int poseRefresh;
 
     public CivilianNpc(UUID id, String name, Personality personality, SkinService.Textures textures,
                        ItemStack gun, ItemStack spareMag, List<ItemStack> extras) {
@@ -92,13 +103,18 @@ public final class CivilianNpc {
         return entityId;
     }
 
-    public void bind(Mannequin body) {
+    public boolean fakePlayer() {
+        return fakePlayer;
+    }
+
+    public void bind(LivingEntity body, boolean fakePlayer) {
         this.entityId = body.getUniqueId();
+        this.fakePlayer = fakePlayer;
         this.lookYaw = body.getLocation().getYaw();
         this.bodyYaw = this.lookYaw;
         this.lookPitch = 0f;
-        this.idleLeft = 30 + (int) (Math.random() * 50);
-        this.nextDecision = 20;
+        this.idleLeft = 20 + (int) (Math.random() * 40);
+        this.nextDecision = 15;
     }
 
     public State state() {
@@ -171,9 +187,23 @@ public final class CivilianNpc {
         if (!id.equals(this.aimedBy)) {
             this.aimedBy = id;
             this.aimSpoken = false;
-            this.noticeTicks = 0;
+            this.noticeTicks = remembered(id) ? personality.noticeDelayTicks() : 0;
         }
-        this.aimHold = 40;
+        remember(id);
+        this.aimHold = 55;
+    }
+
+    public boolean remembered(UUID id) {
+        return id != null && id.equals(rememberedAimer) && System.currentTimeMillis() < rememberUntil;
+    }
+
+    public void remember(UUID id) {
+        this.rememberedAimer = id;
+        this.rememberUntil = System.currentTimeMillis() + 45_000L;
+    }
+
+    public UUID rememberedAimer() {
+        return System.currentTimeMillis() < rememberUntil ? rememberedAimer : null;
     }
 
     public int aimHold() {
@@ -254,7 +284,11 @@ public final class CivilianNpc {
     }
 
     public boolean dueEquip() {
-        return ++equipTicks % 20 == 0;
+        return ++equipTicks % 8 == 0;
+    }
+
+    public boolean duePoseRefresh() {
+        return ++poseRefresh % 40 == 0;
     }
 
     public byte poseFlags() {
@@ -265,13 +299,99 @@ public final class CivilianNpc {
         this.poseFlags = flags;
     }
 
+    public int drawLeft() {
+        return drawLeft;
+    }
+
+    public void setDrawLeft(int ticks) {
+        this.drawLeft = ticks;
+    }
+
+    public void decDraw() {
+        if (drawLeft > 0) {
+            drawLeft--;
+        }
+    }
+
+    public int holsterLeft() {
+        return holsterLeft;
+    }
+
+    public void setHolsterLeft(int ticks) {
+        this.holsterLeft = ticks;
+    }
+
+    public void decHolster() {
+        if (holsterLeft > 0) {
+            holsterLeft--;
+        }
+    }
+
+    public int flinchLeft() {
+        return flinchLeft;
+    }
+
+    public void setFlinchLeft(int ticks) {
+        this.flinchLeft = ticks;
+    }
+
+    public void decFlinch() {
+        if (flinchLeft > 0) {
+            flinchLeft--;
+        }
+    }
+
+    public int inspectLeft() {
+        return inspectLeft;
+    }
+
+    public void setInspectLeft(int ticks) {
+        this.inspectLeft = ticks;
+    }
+
+    public void decInspect() {
+        if (inspectLeft > 0) {
+            inspectLeft--;
+        }
+    }
+
+    public int coverLeft() {
+        return coverLeft;
+    }
+
+    public void setCoverLeft(int ticks) {
+        this.coverLeft = ticks;
+    }
+
+    public void decCover() {
+        if (coverLeft > 0) {
+            coverLeft--;
+        }
+    }
+
+    public int circleLeft() {
+        return circleLeft;
+    }
+
+    public void setCircleLeft(int ticks) {
+        this.circleLeft = ticks;
+    }
+
+    public void decCircle() {
+        if (circleLeft > 0) {
+            circleLeft--;
+        }
+    }
+
     public void beginWalk(Location from, Location via, Location to, int ticks) {
         this.walkFrom = from.clone();
         this.walkVia = via.clone();
         this.walkTo = to.clone();
         this.walkTicks = 0;
-        this.walkMax = Math.max(25, ticks);
-        this.state = State.WALK;
+        this.walkMax = Math.max(18, ticks);
+        if (state != State.CIRCLE && state != State.BACKPEDAL && state != State.FLEE) {
+            this.state = State.WALK;
+        }
     }
 
     public void clearWalk() {
@@ -280,7 +400,8 @@ public final class CivilianNpc {
     }
 
     public boolean walking() {
-        return walkTo != null && (state == State.WALK || state == State.FLEE || state == State.BACKPEDAL);
+        return walkTo != null && (state == State.WALK || state == State.FLEE
+                || state == State.BACKPEDAL || state == State.CIRCLE);
     }
 
     public Location stepWalk() {
@@ -300,7 +421,8 @@ public final class CivilianNpc {
                 quad(a.getX(), b.getX(), c.getX(), Math.min(1.0, t + 0.04)) - x,
                 0,
                 quad(a.getZ(), b.getZ(), c.getZ(), Math.min(1.0, t + 0.04)) - z);
-        if (ahead.lengthSquared() > 1.0e-6) {
+        if (ahead.lengthSquared() > 1.0e-6 && state != State.AIM && state != State.DRAW
+                && state != State.CIRCLE && state != State.BACKPEDAL) {
             lookYaw = yawOf(ahead);
             bodyYaw = lerpYaw(bodyYaw, lookYaw, 0.22f);
             lookPitch = 0f;
@@ -309,7 +431,7 @@ public final class CivilianNpc {
             clearWalk();
             if (state == State.WALK) {
                 state = State.STAND;
-                idleLeft = 35 + (int) (Math.random() * 90);
+                idleLeft = 25 + (int) (Math.random() * 70);
             }
         }
         return at;
@@ -349,29 +471,45 @@ public final class CivilianNpc {
         float yaw = yawOf(delta);
         double horiz = Math.sqrt(delta.getX() * delta.getX() + delta.getZ() * delta.getZ());
         float pitch = (float) Math.toDegrees(-Math.atan2(delta.getY(), horiz));
-        pitch = Math.max(-35f, Math.min(28f, pitch));
+        pitch = Math.max(-28f, Math.min(22f, pitch));
+        float neck = personality.neckLimit();
+        float headDelta = wrap(yaw - bodyYaw);
+        if (Math.abs(headDelta) > neck) {
+            yaw = bodyYaw + Math.copySign(neck, headDelta);
+            bodyYaw = lerpYaw(bodyYaw, yawOf(delta), bodyRate * 1.6f);
+        }
         lookYaw = lerpYaw(lookYaw, yaw, headRate);
         lookPitch = lerp(lookPitch, pitch, headRate);
-        bodyYaw = lerpYaw(bodyYaw, yaw, bodyRate);
+        bodyYaw = lerpYaw(bodyYaw, yawOf(delta), bodyRate);
     }
 
     public void idleGlance() {
         glanceTicks--;
         if (glanceTicks <= 0) {
-            glanceTicks = 40 + (int) (Math.random() * 80);
-            glanceYaw = bodyYaw + (float) ((Math.random() - 0.5) * 55.0);
+            glanceTicks = 30 + (int) (Math.random() * 70);
+            glanceYaw = bodyYaw + (float) ((Math.random() - 0.5) * personality.neckLimit());
         }
-        lookYaw = lerpYaw(lookYaw, glanceYaw, 0.06f);
-        lookPitch = lerp(lookPitch, (float) ((Math.random() - 0.5) * 4.0), 0.03f);
-        if (Math.abs(wrap(lookYaw - bodyYaw)) > 55f) {
-            bodyYaw = lerpYaw(bodyYaw, lookYaw, 0.04f);
+        lookYaw = lerpYaw(lookYaw, glanceYaw, 0.07f);
+        lookPitch = lerp(lookPitch, (float) ((Math.random() - 0.5) * 5.0), 0.04f);
+        if (Math.abs(wrap(lookYaw - bodyYaw)) > personality.neckLimit() * 0.85f) {
+            bodyYaw = lerpYaw(bodyYaw, lookYaw, 0.05f);
         }
     }
 
     public void aimSway() {
-        lookYaw += (float) ((Math.random() - 0.5) * 0.35);
-        lookPitch += (float) ((Math.random() - 0.5) * 0.2);
-        lookPitch = Math.max(-30f, Math.min(24f, lookPitch));
+        lookYaw += (float) ((Math.random() - 0.5) * personality.sway());
+        lookPitch += (float) ((Math.random() - 0.5) * personality.sway() * 0.6);
+        lookPitch = Math.max(-26f, Math.min(20f, lookPitch));
+    }
+
+    public void inspectLook() {
+        lookPitch = lerp(lookPitch, 28f, 0.12f);
+        lookYaw = lerpYaw(lookYaw, bodyYaw + (float) ((Math.random() - 0.5) * 8.0), 0.08f);
+    }
+
+    public void flinchLook() {
+        lookPitch = Math.min(18f, lookPitch + 6f);
+        lookYaw += (float) ((Math.random() - 0.5) * 14.0);
     }
 
     private static double quad(double a, double b, double c, double t) {

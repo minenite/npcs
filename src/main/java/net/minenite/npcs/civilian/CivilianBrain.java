@@ -7,18 +7,24 @@ import net.minenite.warzplugin.WarzPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Sound;
+import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Pose;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.util.Vector;
 
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Per-tick person: notice delay, wary aftermath, carry/aim pistol, walk, watch,
- * back off or stand ground. Never locks sneak — standing is always unfixed.
+ * Full person loop: notice, draw, ADS, circle, holster, flinch, cover, inspect.
+ * Aim is slowness IV + gun_pose to every client — never locked sneak.
  */
 public final class CivilianBrain {
     private final NpcsPlugin plugin;
@@ -31,15 +37,26 @@ public final class CivilianBrain {
         this.poses = poses;
     }
 
-    public void tick(CivilianNpc npc, Mannequin body) {
-        standUnlocked(body);
+    public void tick(CivilianNpc npc, LivingEntity body) {
+        keepHuman(body);
         if (npc.dueEquip()) {
             holdPistol(body, npc);
         }
+        if (npc.duePoseRefresh()) {
+            poses.refresh();
+        }
 
         Player aimer = aimerOn(body);
-        Player near = nearest(body, 16);
-        Player armed = armedNear(body, 18);
+        Player near = nearest(body, 18);
+        Player armed = armedNear(body, 20);
+        Player shooter = shooterNear(body, 28);
+
+        if (shooter != null && npc.state() != CivilianNpc.State.AIM
+                && npc.state() != CivilianNpc.State.DRAW
+                && npc.state() != CivilianNpc.State.CIRCLE
+                && npc.state() != CivilianNpc.State.FLINCH) {
+            onGunshot(npc, body, shooter);
+        }
 
         if (aimer != null) {
             onAimedAt(npc, body, aimer);
@@ -48,60 +65,44 @@ public final class CivilianBrain {
         }
 
         npc.tickAimHold();
-        if (npc.state() == CivilianNpc.State.AIM && npc.aimHold() <= 0) {
-            dropAim(npc, body);
+        if ((npc.state() == CivilianNpc.State.AIM || npc.state() == CivilianNpc.State.CIRCLE
+                || npc.state() == CivilianNpc.State.DRAW) && npc.aimHold() <= 0) {
+            beginHolster(npc, body);
         }
 
         switch (npc.state()) {
-            case AIM -> {
-                // held a moment after they looked away
-                if (npc.aimedBy() != null) {
-                    Player still = Bukkit.getPlayer(npc.aimedBy());
-                    if (still != null && still.isOnline()) {
-                        npc.lookToward(body.getEyeLocation(), still.getEyeLocation(), 0.28f, 0.18f);
-                        npc.aimSway();
-                    }
-                }
-                poseGun(npc, body, true, true);
-            }
+            case DRAW -> draw(npc, body);
+            case AIM -> aimHold(npc, body);
+            case CIRCLE -> circle(npc, body);
+            case HOLSTER -> holster(npc, body);
             case BACKPEDAL -> {
                 step(npc, body, true);
-                poseGun(npc, body, true, true);
+                poseGun(npc, body, true, true, false);
                 if (!npc.walking()) {
                     npc.setState(CivilianNpc.State.WARY);
-                    npc.setWaryLeft(80 + ThreadLocalRandom.current().nextInt(80));
+                    npc.setWaryLeft(90 + ThreadLocalRandom.current().nextInt(80));
                 }
             }
             case FLEE -> {
                 npc.decFlee();
                 step(npc, body, false);
-                poseGun(npc, body, true, false);
+                poseGun(npc, body, true, false, true);
                 if (npc.fleeLeft() <= 0 || !npc.walking()) {
-                    npc.setState(CivilianNpc.State.WARY);
-                    npc.setWaryLeft(60 + ThreadLocalRandom.current().nextInt(50));
+                    npc.setState(CivilianNpc.State.COVER);
+                    npc.setCoverLeft(40 + ThreadLocalRandom.current().nextInt(40));
                     npc.clearWalk();
                 }
             }
-            case WARY -> {
-                npc.decWary();
-                poseGun(npc, body, true, false);
-                if (armed != null) {
-                    npc.lookToward(body.getEyeLocation(), armed.getEyeLocation(), 0.16f, 0.08f);
-                } else {
-                    npc.idleGlance();
-                }
-                if (npc.waryLeft() <= 0) {
-                    npc.setState(CivilianNpc.State.STAND);
-                    npc.setIdleLeft(40 + ThreadLocalRandom.current().nextInt(70));
-                    poseGun(npc, body, true, false);
-                }
-            }
+            case FLINCH -> flinch(npc, body);
+            case INSPECT -> inspect(npc, body);
+            case COVER -> cover(npc, body, armed);
+            case WARY -> wary(npc, body, armed);
             case WATCH -> watch(npc, body, near, armed);
             case WALK -> {
-                maybePauseToWatch(npc, body, near, armed);
+                maybePause(npc, body, near, armed);
                 if (npc.state() == CivilianNpc.State.WALK) {
                     step(npc, body, false);
-                    poseGun(npc, body, true, false);
+                    poseGun(npc, body, true, false, false);
                     footstep(body, npc);
                 }
             }
@@ -111,25 +112,45 @@ public final class CivilianBrain {
         applyLook(body, npc);
     }
 
-    private void onAimedAt(CivilianNpc npc, Mannequin body, Player aimer) {
+    private void onAimedAt(CivilianNpc npc, LivingEntity body, Player aimer) {
+        boolean ads = playerAiming(aimer);
         npc.setAimedBy(aimer.getUniqueId());
         npc.addNotice();
-        npc.lookToward(body.getEyeLocation(), aimer.getEyeLocation(), 0.22f, 0.10f);
-        if (npc.noticeTicks() < npc.personality().noticeDelayTicks()) {
+        npc.lookToward(body.getEyeLocation(), aimer.getEyeLocation(), ads ? 0.32f : 0.20f, ads ? 0.16f : 0.09f);
+        int need = Math.max(1, npc.personality().noticeDelayTicks() / (ads ? 2 : 1));
+        if (npc.remembered(aimer.getUniqueId())) {
+            need = 1;
+        }
+        if (npc.noticeTicks() < need) {
             if (npc.state() == CivilianNpc.State.WALK) {
                 npc.clearWalk();
             }
-            npc.setState(CivilianNpc.State.WATCH);
-            poseGun(npc, body, true, false);
+            if (npc.state() != CivilianNpc.State.DRAW && npc.state() != CivilianNpc.State.AIM
+                    && npc.state() != CivilianNpc.State.CIRCLE) {
+                npc.setState(CivilianNpc.State.WATCH);
+            }
+            poseGun(npc, body, true, false, npc.state() == CivilianNpc.State.DRAW);
             return;
         }
-        npc.clearWalk();
-        boolean first = npc.state() != CivilianNpc.State.AIM
-                && npc.state() != CivilianNpc.State.BACKPEDAL;
-        npc.setState(CivilianNpc.State.AIM);
-        poseGun(npc, body, true, true);
-        npc.aimSway();
-        if (first && !npc.aimSpoken() && npc.canTalk()) {
+        if (npc.state() == CivilianNpc.State.AIM || npc.state() == CivilianNpc.State.CIRCLE) {
+            poseGun(npc, body, true, true, false);
+            npc.aimSway();
+            if (npc.state() == CivilianNpc.State.CIRCLE) {
+                step(npc, body, false);
+            } else if (npc.personality().circleStrafes() && ThreadLocalRandom.current().nextInt(80) == 0) {
+                startCircle(npc, body, aimer);
+            }
+            return;
+        }
+        if (npc.state() != CivilianNpc.State.DRAW) {
+            npc.clearWalk();
+            npc.setState(CivilianNpc.State.DRAW);
+            npc.setDrawLeft(npc.personality().drawDelayTicks());
+            poseGun(npc, body, true, false, true);
+            body.getWorld().playSound(body.getLocation(), Sound.ITEM_ARMOR_EQUIP_LEATHER, 0.35f, 1.3f);
+        }
+        draw(npc, body);
+        if (!npc.aimSpoken() && npc.canTalk() && npc.drawLeft() <= 2) {
             npc.markAimSpoken();
             talk.aimedAt(npc, aimer);
             if (!npc.personality().standsGround() && ThreadLocalRandom.current().nextBoolean()) {
@@ -138,17 +159,148 @@ public final class CivilianBrain {
         }
     }
 
-    private void dropAim(CivilianNpc npc, Mannequin body) {
-        npc.setAimedBy(null);
-        npc.setState(CivilianNpc.State.WARY);
-        npc.setWaryLeft(90 + ThreadLocalRandom.current().nextInt(70));
-        npc.clearWalk();
-        standUnlocked(body);
-        poseGun(npc, body, true, false);
+    private void draw(CivilianNpc npc, LivingEntity body) {
+        npc.decDraw();
+        poseGun(npc, body, true, false, true);
+        if (npc.aimedBy() != null) {
+            Player still = Bukkit.getPlayer(npc.aimedBy());
+            if (NpcBodies.realPlayer(still)) {
+                npc.lookToward(body.getEyeLocation(), still.getEyeLocation(), 0.26f, 0.14f);
+            }
+        }
+        if (npc.drawLeft() > 0) {
+            return;
+        }
+        finishDraw(npc, body);
     }
 
-    private void standThink(CivilianNpc npc, Mannequin body, Player near, Player armed) {
-        poseGun(npc, body, true, false);
+    private void finishDraw(CivilianNpc npc, LivingEntity body) {
+        npc.setState(CivilianNpc.State.AIM);
+        poseGun(npc, body, true, true, false);
+        body.getWorld().playSound(body.getLocation(), Sound.ITEM_CROSSBOW_LOADING_END, 0.2f, 1.6f);
+        if (npc.aimedBy() != null && npc.personality().circleStrafes()
+                && ThreadLocalRandom.current().nextInt(3) == 0) {
+            Player focus = Bukkit.getPlayer(npc.aimedBy());
+            if (NpcBodies.realPlayer(focus)) {
+                startCircle(npc, body, focus);
+            }
+        }
+    }
+
+    private void aimHold(CivilianNpc npc, LivingEntity body) {
+        if (npc.aimedBy() != null) {
+            Player still = Bukkit.getPlayer(npc.aimedBy());
+            if (NpcBodies.realPlayer(still)) {
+                npc.lookToward(body.getEyeLocation(), still.getEyeLocation(), 0.30f, 0.18f);
+                npc.aimSway();
+            }
+        }
+        poseGun(npc, body, true, true, false);
+    }
+
+    private void circle(CivilianNpc npc, LivingEntity body) {
+        npc.decCircle();
+        step(npc, body, false);
+        poseGun(npc, body, true, true, false);
+        if (npc.aimedBy() != null) {
+            Player still = Bukkit.getPlayer(npc.aimedBy());
+            if (NpcBodies.realPlayer(still)) {
+                npc.lookToward(body.getEyeLocation(), still.getEyeLocation(), 0.34f, 0.20f);
+                npc.aimSway();
+            }
+        }
+        if (npc.circleLeft() <= 0 || !npc.walking()) {
+            npc.clearWalk();
+            npc.setState(CivilianNpc.State.AIM);
+        }
+    }
+
+    private void beginHolster(CivilianNpc npc, LivingEntity body) {
+        npc.setAimedBy(null);
+        npc.clearWalk();
+        npc.setState(CivilianNpc.State.HOLSTER);
+        npc.setHolsterLeft(npc.personality().holsterDelayTicks());
+        standUnlocked(body);
+        poseGun(npc, body, true, false, true);
+    }
+
+    private void holster(CivilianNpc npc, LivingEntity body) {
+        npc.decHolster();
+        poseGun(npc, body, true, false, npc.holsterLeft() > npc.personality().holsterDelayTicks() / 2);
+        npc.idleGlance();
+        if (npc.holsterLeft() > 0) {
+            return;
+        }
+        npc.setState(CivilianNpc.State.WARY);
+        npc.setWaryLeft(80 + ThreadLocalRandom.current().nextInt(90));
+        poseGun(npc, body, true, false, false);
+    }
+
+    private void flinch(CivilianNpc npc, LivingEntity body) {
+        npc.decFlinch();
+        npc.flinchLook();
+        poseGun(npc, body, true, npc.aimedBy() != null, false);
+        if (npc.flinchLeft() > 0) {
+            return;
+        }
+        if (npc.aimedBy() != null) {
+            npc.setState(CivilianNpc.State.AIM);
+            poseGun(npc, body, true, true, false);
+        } else {
+            npc.setState(CivilianNpc.State.WARY);
+            npc.setWaryLeft(50);
+        }
+    }
+
+    private void inspect(CivilianNpc npc, LivingEntity body) {
+        npc.decInspect();
+        npc.inspectLook();
+        poseGun(npc, body, true, false, true);
+        if (npc.inspectLeft() <= 0) {
+            npc.setState(CivilianNpc.State.STAND);
+            npc.setIdleLeft(20 + ThreadLocalRandom.current().nextInt(40));
+            poseGun(npc, body, true, false, false);
+        }
+    }
+
+    private void cover(CivilianNpc npc, LivingEntity body, Player armed) {
+        npc.decCover();
+        poseGun(npc, body, true, false, false);
+        if (armed != null) {
+            npc.lookToward(body.getEyeLocation(), armed.getEyeLocation(), 0.10f, 0.05f);
+        } else {
+            npc.idleGlance();
+        }
+        if (npc.coverLeft() <= 0) {
+            npc.setState(CivilianNpc.State.WARY);
+            npc.setWaryLeft(40 + ThreadLocalRandom.current().nextInt(40));
+        }
+    }
+
+    private void wary(CivilianNpc npc, LivingEntity body, Player armed) {
+        npc.decWary();
+        poseGun(npc, body, true, false, false);
+        if (armed != null) {
+            npc.lookToward(body.getEyeLocation(), armed.getEyeLocation(), 0.16f, 0.08f);
+        } else if (npc.rememberedAimer() != null) {
+            Player ghost = Bukkit.getPlayer(npc.rememberedAimer());
+            if (NpcBodies.realPlayer(ghost) && ghost.getWorld() == body.getWorld()) {
+                npc.lookToward(body.getEyeLocation(), ghost.getEyeLocation(), 0.08f, 0.03f);
+            } else {
+                npc.idleGlance();
+            }
+        } else {
+            npc.idleGlance();
+        }
+        if (npc.waryLeft() <= 0) {
+            npc.setState(CivilianNpc.State.STAND);
+            npc.setIdleLeft(30 + ThreadLocalRandom.current().nextInt(60));
+            poseGun(npc, body, true, false, false);
+        }
+    }
+
+    private void standThink(CivilianNpc npc, LivingEntity body, Player near, Player armed) {
+        poseGun(npc, body, true, false, false);
         npc.decIdle();
         npc.decDecision();
         if (armed != null && npc.personality().standsGround()) {
@@ -157,7 +309,7 @@ public final class CivilianBrain {
             npc.setIdleLeft(35 + ThreadLocalRandom.current().nextInt(40));
             return;
         }
-        if (near != null && ThreadLocalRandom.current().nextInt(80) == 0) {
+        if (near != null && ThreadLocalRandom.current().nextInt(70) == 0) {
             npc.setWatching(near.getUniqueId());
             npc.setState(CivilianNpc.State.WATCH);
             npc.setIdleLeft(25 + ThreadLocalRandom.current().nextInt(35));
@@ -170,16 +322,27 @@ public final class CivilianBrain {
         if (npc.idleLeft() > 0) {
             return;
         }
-        if (ThreadLocalRandom.current().nextInt(5) == 0) {
+        int roll = ThreadLocalRandom.current().nextInt(12);
+        if (roll == 0) {
             npc.setState(CivilianNpc.State.SCAN);
             npc.setIdleLeft(25 + ThreadLocalRandom.current().nextInt(35));
+            return;
+        }
+        if (roll == 1 && npc.personality().inspectsGun()) {
+            npc.setState(CivilianNpc.State.INSPECT);
+            npc.setInspectLeft(18 + ThreadLocalRandom.current().nextInt(16));
+            return;
+        }
+        if (roll == 2 && npc.personality().ducksToCover()) {
+            npc.setState(CivilianNpc.State.COVER);
+            npc.setCoverLeft(25 + ThreadLocalRandom.current().nextInt(30));
             return;
         }
         startWalk(npc, body, false);
     }
 
-    private void scan(CivilianNpc npc, Mannequin body, Player near) {
-        poseGun(npc, body, true, false);
+    private void scan(CivilianNpc npc, LivingEntity body, Player near) {
+        poseGun(npc, body, true, false, false);
         npc.decIdle();
         npc.idleGlance();
         if (near != null) {
@@ -191,12 +354,12 @@ public final class CivilianBrain {
         }
     }
 
-    private void watch(CivilianNpc npc, Mannequin body, Player near, Player armed) {
-        poseGun(npc, body, true, false);
+    private void watch(CivilianNpc npc, LivingEntity body, Player near, Player armed) {
+        poseGun(npc, body, true, false, false);
         npc.decIdle();
         Player focus = armed != null ? armed : (npc.watching() != null ? Bukkit.getPlayer(npc.watching()) : near);
-        if (focus != null && focus.isOnline() && focus.getWorld() == body.getWorld()) {
-            npc.lookToward(body.getEyeLocation(), focus.getEyeLocation(), 0.14f, 0.06f);
+        if (NpcBodies.realPlayer(focus) && focus.getWorld() == body.getWorld()) {
+            npc.lookToward(body.getEyeLocation(), focus.getEyeLocation(), 0.16f, 0.07f);
         } else {
             npc.idleGlance();
         }
@@ -207,27 +370,57 @@ public final class CivilianBrain {
         }
     }
 
-    private void maybePauseToWatch(CivilianNpc npc, Mannequin body, Player near, Player armed) {
+    private void maybePause(CivilianNpc npc, LivingEntity body, Player near, Player armed) {
         if (armed == null && near == null) {
             return;
         }
-        if (ThreadLocalRandom.current().nextInt(90) != 0) {
+        if (ThreadLocalRandom.current().nextInt(70) != 0) {
             return;
         }
         npc.clearWalk();
+        if (armed != null && npc.personality().ducksToCover() && ThreadLocalRandom.current().nextBoolean()) {
+            npc.setState(CivilianNpc.State.COVER);
+            npc.setCoverLeft(20 + ThreadLocalRandom.current().nextInt(25));
+            return;
+        }
         npc.setWatching(armed != null ? armed.getUniqueId() : near.getUniqueId());
         npc.setState(CivilianNpc.State.WATCH);
         npc.setIdleLeft(20 + ThreadLocalRandom.current().nextInt(30));
     }
 
-    private void startWalk(CivilianNpc npc, Mannequin body, boolean flee) {
+    private void onGunshot(CivilianNpc npc, LivingEntity body, Player shooter) {
+        npc.remember(shooter.getUniqueId());
+        npc.lookToward(body.getEyeLocation(), shooter.getEyeLocation(), 0.28f, 0.12f);
+        if (npc.personality().panicsAtShots() && ThreadLocalRandom.current().nextBoolean()) {
+            npc.setFleeLeft(50 + ThreadLocalRandom.current().nextInt(40));
+            startWalk(npc, body, true);
+            return;
+        }
+        npc.setState(CivilianNpc.State.FLINCH);
+        npc.setFlinchLeft(8 + ThreadLocalRandom.current().nextInt(8));
+        if (npc.canTalk() && ThreadLocalRandom.current().nextInt(3) == 0) {
+            talk.aimedAt(npc, shooter);
+        }
+    }
+
+    public void hurt(CivilianNpc npc, LivingEntity body, Player from) {
+        npc.setState(CivilianNpc.State.FLINCH);
+        npc.setFlinchLeft(10 + ThreadLocalRandom.current().nextInt(8));
+        if (from != null) {
+            npc.setAimedBy(from.getUniqueId());
+            npc.remember(from.getUniqueId());
+        }
+        poseGun(npc, body, true, true, false);
+    }
+
+    private void startWalk(CivilianNpc npc, LivingEntity body, boolean flee) {
         double min = plugin.getConfig().getDouble("civilian.wander-min", 4);
         double max = plugin.getConfig().getDouble("civilian.wander-max", 11);
         double speed = plugin.getConfig().getDouble("civilian.walk-speed", 0.11);
         if (flee) {
             min = 8;
             max = 16;
-            speed = 0.18;
+            speed = 0.19;
         }
         WanderEngine.plan(npc, body.getLocation(), min, max, speed);
         if (npc.state() != CivilianNpc.State.WALK && !flee) {
@@ -239,22 +432,41 @@ public final class CivilianBrain {
         }
     }
 
-    private void backOff(CivilianNpc npc, Mannequin body, Player from) {
+    private void startCircle(CivilianNpc npc, LivingEntity body, Player around) {
         Location here = body.getLocation();
-        org.bukkit.util.Vector away = here.toVector().subtract(from.getLocation().toVector());
+        Vector out = here.toVector().subtract(around.getLocation().toVector());
+        if (out.lengthSquared() < 0.01) {
+            out = here.getDirection();
+        }
+        out.setY(0).normalize();
+        Vector side = new Vector(-out.getZ(), 0, out.getX())
+                .multiply(ThreadLocalRandom.current().nextBoolean() ? 3.2 : -3.2);
+        Location dest = WanderEngine.keepXZ(here.clone().add(side));
+        if (dest == null) {
+            return;
+        }
+        npc.setState(CivilianNpc.State.CIRCLE);
+        npc.setCircleLeft(24 + ThreadLocalRandom.current().nextInt(20));
+        npc.beginWalk(here, here.clone().add(side.clone().multiply(0.5)), dest, 22);
+        npc.setState(CivilianNpc.State.CIRCLE);
+    }
+
+    private void backOff(CivilianNpc npc, LivingEntity body, Player from) {
+        Location here = body.getLocation();
+        Vector away = here.toVector().subtract(from.getLocation().toVector());
         if (away.lengthSquared() < 0.01) {
             away = here.getDirection().multiply(-1);
         }
-        away.setY(0).normalize().multiply(4.5);
+        away.setY(0).normalize().multiply(4.8);
         Location dest = WanderEngine.keepXZ(here.clone().add(away));
         if (dest == null) {
             return;
         }
-        npc.beginWalk(here, here.clone().add(away.clone().multiply(0.5)), dest, 36);
+        npc.beginWalk(here, here.clone().add(away.clone().multiply(0.5)), dest, 32);
         npc.setState(CivilianNpc.State.BACKPEDAL);
     }
 
-    private void step(CivilianNpc npc, Mannequin body, boolean backpedal) {
+    private void step(CivilianNpc npc, LivingEntity body, boolean backpedal) {
         Location next = npc.stepWalk();
         if (next == null) {
             return;
@@ -263,21 +475,29 @@ public final class CivilianBrain {
         if (use == null) {
             use = next;
         }
-        float yaw = backpedal ? npc.lookYaw() : npc.bodyYaw();
+        float yaw = backpedal || npc.state() == CivilianNpc.State.CIRCLE || npc.state() == CivilianNpc.State.AIM
+                ? npc.lookYaw() : npc.bodyYaw();
         use.setYaw(yaw);
         use.setPitch(npc.lookPitch());
         body.teleport(use);
+        if (body instanceof Player player) {
+            Vector vel = use.toVector().subtract(body.getLocation().toVector());
+            vel.setY(0);
+            if (vel.lengthSquared() > 1.0e-6) {
+                player.setVelocity(vel.multiply(0.08));
+            }
+        }
     }
 
-    private void footstep(Mannequin body, CivilianNpc npc) {
-        if (ThreadLocalRandom.current().nextInt(9) != 0) {
+    private void footstep(LivingEntity body, CivilianNpc npc) {
+        if (ThreadLocalRandom.current().nextInt(8) != 0) {
             return;
         }
-        body.getWorld().playSound(body.getLocation(), Sound.BLOCK_GRAVEL_STEP, 0.25f, 0.9f
-                + ThreadLocalRandom.current().nextFloat() * 0.2f);
+        body.getWorld().playSound(body.getLocation(), Sound.BLOCK_GRAVEL_STEP, 0.28f, 0.85f
+                + ThreadLocalRandom.current().nextFloat() * 0.25f);
     }
 
-    private void poseGun(CivilianNpc npc, Mannequin body, boolean gun, boolean aim) {
+    private void poseGun(CivilianNpc npc, LivingEntity body, boolean gun, boolean aim, boolean hipRaise) {
         holdPistol(body, npc);
         standUnlocked(body);
         if (gun) {
@@ -287,38 +507,85 @@ public final class CivilianBrain {
         }
         if (aim) {
             body.addScoreboardTag("pgm_aim");
+            body.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 16, 3, false, false, false));
+            if (body instanceof Player player) {
+                try {
+                    player.startUsingItem(EquipmentSlot.HAND);
+                } catch (Exception ignored) {
+                }
+            }
         } else {
             body.removeScoreboardTag("pgm_aim");
+            body.removePotionEffect(PotionEffectType.SLOWNESS);
+            if (body instanceof Player player) {
+                try {
+                    player.clearActiveItem();
+                } catch (Exception ignored) {
+                }
+            }
         }
-        poses.set(npc.id(), gun, aim);
-        poses.set(body.getUniqueId(), gun, aim);
+        if (hipRaise) {
+            body.addScoreboardTag("pgm_fire");
+        } else {
+            body.removeScoreboardTag("pgm_fire");
+        }
+        UUID entityId = body.getUniqueId();
+        poses.set(entityId, gun, aim, hipRaise);
+        if (!entityId.equals(npc.id())) {
+            poses.set(npc.id(), gun, aim, hipRaise);
+        }
     }
 
-    private void holdPistol(Mannequin body, CivilianNpc npc) {
-        EntityEquipment equipment = body.getEquipment();
-        if (equipment == null || npc.gun() == null) {
+    private void holdPistol(LivingEntity body, CivilianNpc npc) {
+        if (npc.gun() == null) {
             return;
         }
-        equipment.setItem(EquipmentSlot.HAND, npc.gun().clone());
-        equipment.setItem(EquipmentSlot.OFF_HAND, null);
+        ItemStack gun = npc.gun().clone();
+        if (body instanceof Player player) {
+            player.getInventory().setItemInMainHand(gun);
+            player.getInventory().setItemInOffHand(null);
+            player.updateInventory();
+        }
+        EntityEquipment equipment = body.getEquipment();
+        if (equipment != null) {
+            equipment.setItem(EquipmentSlot.HAND, gun);
+            equipment.setItem(EquipmentSlot.OFF_HAND, null);
+        }
     }
 
-    private void standUnlocked(Mannequin body) {
+    private void keepHuman(LivingEntity body) {
+        standUnlocked(body);
+        body.setGravity(false);
+        body.setFireTicks(0);
+        if (body instanceof Player player) {
+            player.setSneaking(false);
+            player.setFlying(false);
+            player.setGliding(false);
+            player.setFoodLevel(20);
+            player.setSaturation(20f);
+            player.setExhaustion(0f);
+        }
+    }
+
+    private void standUnlocked(LivingEntity body) {
+        if (body instanceof Player player) {
+            player.setSneaking(false);
+            return;
+        }
+        if (!(body instanceof Mannequin mannequin)) {
+            return;
+        }
         try {
-            if (body.getPose() != Pose.STANDING) {
-                body.setPose(Pose.STANDING, false);
-            } else {
-                body.setPose(Pose.STANDING, false);
-            }
+            mannequin.setPose(Pose.STANDING, false);
         } catch (IllegalArgumentException ignored) {
             try {
-                body.setPose(Pose.STANDING);
+                mannequin.setPose(Pose.STANDING);
             } catch (Exception ignoredToo) {
             }
         }
     }
 
-    private void applyLook(Mannequin body, CivilianNpc npc) {
+    private void applyLook(LivingEntity body, CivilianNpc npc) {
         try {
             double dist = 8;
             double yaw = Math.toRadians(npc.lookYaw());
@@ -331,40 +598,50 @@ public final class CivilianBrain {
         }
         body.setRotation(npc.lookYaw(), npc.lookPitch());
         try {
-            body.setBodyYaw(npc.bodyYaw());
+            if (body instanceof Mannequin mannequin) {
+                mannequin.setBodyYaw(npc.bodyYaw());
+            }
         } catch (Exception ignored) {
         }
     }
 
-    private Player aimerOn(Mannequin body) {
-        double range = plugin.getConfig().getDouble("civilian.aim-range", 42);
-        double need = plugin.getConfig().getDouble("civilian.aim-dot", 0.92);
+    private Player aimerOn(LivingEntity body) {
+        double range = plugin.getConfig().getDouble("civilian.aim-range", 48);
+        double need = plugin.getConfig().getDouble("civilian.aim-dot", 0.86);
         Player best = null;
         double bestDot = need;
         for (Player player : body.getWorld().getPlayers()) {
-            if (!player.isOnline() || player.getLocation().distanceSquared(body.getLocation()) > range * range) {
+            if (!NpcBodies.realPlayer(player) || player.getWorld() != body.getWorld()) {
+                continue;
+            }
+            if (player.getLocation().distanceSquared(body.getLocation()) > range * range) {
                 continue;
             }
             if (!holdingGun(player)) {
                 continue;
             }
             Location eye = player.getEyeLocation();
-            org.bukkit.util.Vector dir = eye.getDirection();
+            Vector dir = eye.getDirection();
             if (dir.lengthSquared() < 1.0e-6) {
                 continue;
             }
             dir.normalize();
-            org.bukkit.util.Vector to = body.getEyeLocation().toVector().subtract(eye.toVector());
+            Vector to = body.getEyeLocation().toVector().subtract(eye.toVector());
             double dist = to.length();
             if (dist < 1.0e-6) {
                 continue;
             }
             to.multiply(1.0 / dist);
             double dot = dir.dot(to);
-            if (dot < bestDot) {
+            double needNow = playerAiming(player) ? need - 0.06 : need;
+            if (dot < needNow) {
                 continue;
             }
-            if (body.getBoundingBox().expand(0.4).rayTrace(eye.toVector(), dir, dist + 1.0) == null) {
+            if (body.getBoundingBox().expand(0.85).rayTrace(eye.toVector(), dir, dist + 2.0) == null
+                    && dot < 0.97) {
+                continue;
+            }
+            if (dot < bestDot && best != null) {
                 continue;
             }
             bestDot = dot;
@@ -373,24 +650,11 @@ public final class CivilianBrain {
         return best;
     }
 
-    private Player nearest(Mannequin body, double range) {
+    private Player nearest(LivingEntity body, double range) {
         Player best = null;
         double bestD = range * range;
         for (Player player : body.getWorld().getPlayers()) {
-            double d = player.getLocation().distanceSquared(body.getLocation());
-            if (d < bestD) {
-                bestD = d;
-                best = player;
-            }
-        }
-        return best;
-    }
-
-    private Player armedNear(Mannequin body, double range) {
-        Player best = null;
-        double bestD = range * range;
-        for (Player player : body.getWorld().getPlayers()) {
-            if (!holdingGun(player)) {
+            if (!NpcBodies.realPlayer(player)) {
                 continue;
             }
             double d = player.getLocation().distanceSquared(body.getLocation());
@@ -400,6 +664,49 @@ public final class CivilianBrain {
             }
         }
         return best;
+    }
+
+    private Player armedNear(LivingEntity body, double range) {
+        Player best = null;
+        double bestD = range * range;
+        for (Player player : body.getWorld().getPlayers()) {
+            if (!NpcBodies.realPlayer(player) || !holdingGun(player)) {
+                continue;
+            }
+            double d = player.getLocation().distanceSquared(body.getLocation());
+            if (d < bestD) {
+                bestD = d;
+                best = player;
+            }
+        }
+        return best;
+    }
+
+    private Player shooterNear(LivingEntity body, double range) {
+        Player best = null;
+        double bestD = range * range;
+        for (Player player : body.getWorld().getPlayers()) {
+            if (!NpcBodies.realPlayer(player)) {
+                continue;
+            }
+            if (!player.getScoreboardTags().contains("pgm_fire")) {
+                continue;
+            }
+            double d = player.getLocation().distanceSquared(body.getLocation());
+            if (d < bestD) {
+                bestD = d;
+                best = player;
+            }
+        }
+        return best;
+    }
+
+    private boolean playerAiming(Player player) {
+        if (player.getScoreboardTags().contains("pgm_aim")) {
+            return true;
+        }
+        PotionEffect slowness = player.getPotionEffect(PotionEffectType.SLOWNESS);
+        return slowness != null && slowness.getAmplifier() >= 3 && holdingGun(player);
     }
 
     private boolean holdingGun(Player player) {

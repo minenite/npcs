@@ -17,8 +17,8 @@ civilian:
   wander-max: 11
   idle-ticks-min: 50
   idle-ticks-max: 180
-  aim-range: 42
-  aim-dot: 0.92
+  aim-range: 48
+  aim-dot: 0.86
   talk-cooldown-ms: 8000
   pistols:
     - m9

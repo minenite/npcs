@@ -222,12 +222,12 @@ public enum Personality {
     /** Ticks before they notice a gun on them. Faster minds, slower drunks. */
     public int noticeDelayTicks() {
         return switch (this) {
-            case PARANOID_LONER -> 3;
-            case NERVOUS_SCAV, JITTERY_TEEN -> 5;
-            case BITTER_TRADER, CYNICAL_SMOKER -> 7;
-            case QUIET_MEDIC, RELIGIOUS_SURVIVOR -> 8;
-            case TIRED_FATHER, STOIC_FARMER -> 11;
-            case FRIENDLY_DRUNK -> 16;
+            case PARANOID_LONER -> 2;
+            case NERVOUS_SCAV, JITTERY_TEEN -> 4;
+            case BITTER_TRADER, CYNICAL_SMOKER -> 6;
+            case QUIET_MEDIC, RELIGIOUS_SURVIVOR -> 7;
+            case TIRED_FATHER, STOIC_FARMER -> 9;
+            case FRIENDLY_DRUNK -> 14;
         };
     }
 
@@ -241,6 +241,56 @@ public enum Personality {
 
     public boolean chatty() {
         return this == FRIENDLY_DRUNK || this == BITTER_TRADER || this == CYNICAL_SMOKER;
+    }
+
+    public int drawDelayTicks() {
+        return switch (this) {
+            case PARANOID_LONER -> 4;
+            case NERVOUS_SCAV, JITTERY_TEEN -> 7;
+            case BITTER_TRADER, CYNICAL_SMOKER, STOIC_FARMER -> 8;
+            case QUIET_MEDIC, RELIGIOUS_SURVIVOR, TIRED_FATHER -> 11;
+            case FRIENDLY_DRUNK -> 16;
+        };
+    }
+
+    public int holsterDelayTicks() {
+        return switch (this) {
+            case PARANOID_LONER, NERVOUS_SCAV -> 50;
+            case JITTERY_TEEN, FRIENDLY_DRUNK -> 28;
+            default -> 36;
+        };
+    }
+
+    public float neckLimit() {
+        return switch (this) {
+            case PARANOID_LONER, NERVOUS_SCAV -> 72f;
+            case STOIC_FARMER, TIRED_FATHER -> 48f;
+            default -> 58f;
+        };
+    }
+
+    public float sway() {
+        return switch (this) {
+            case JITTERY_TEEN, NERVOUS_SCAV, FRIENDLY_DRUNK -> 0.85f;
+            case STOIC_FARMER, TIRED_FATHER -> 0.22f;
+            default -> 0.4f;
+        };
+    }
+
+    public boolean circleStrafes() {
+        return this == PARANOID_LONER || this == BITTER_TRADER || this == CYNICAL_SMOKER;
+    }
+
+    public boolean inspectsGun() {
+        return this == PARANOID_LONER || this == NERVOUS_SCAV || this == JITTERY_TEEN || this == CYNICAL_SMOKER;
+    }
+
+    public boolean ducksToCover() {
+        return this == NERVOUS_SCAV || this == JITTERY_TEEN || this == QUIET_MEDIC || this == FRIENDLY_DRUNK;
+    }
+
+    public boolean panicsAtShots() {
+        return this == NERVOUS_SCAV || this == JITTERY_TEEN || this == FRIENDLY_DRUNK || this == RELIGIOUS_SURVIVOR;
     }
 
     private static String pick(List<String> lines, String avoid) {

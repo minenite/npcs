@@ -1,9 +1,11 @@
 package net.minenite.npcs.civilian;
 
+import net.minenite.npcs.NpcsPlugin;
 import net.minenite.warzplugin.WarzPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.messaging.Messenger;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -12,23 +14,42 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Pushes the same {@code pvpgunminus:gun_pose} bytes WarZ uses for real players
- * so the Minenite client poses a civilian's pistol (carry / aim) by UUID.
+ * Same {@code pvpgunminus:gun_pose} bytes WarZ uses. Sent to every online
+ * viewer — not just companion-hello clients — keyed by the entity UUID the
+ * client will look up in {@code GunPoseClient}.
  */
 public final class GunPoseBridge {
     public static final String CHANNEL = "pvpgunminus:gun_pose";
     public static final byte FLAG_GUN = 1;
     public static final byte FLAG_AIM = 2;
+    public static final byte FLAG_FIRE = 4;
 
+    private final NpcsPlugin plugin;
     private final Map<UUID, Byte> last = new ConcurrentHashMap<>();
 
+    public GunPoseBridge(NpcsPlugin plugin) {
+        this.plugin = plugin;
+        Messenger messenger = plugin.getServer().getMessenger();
+        messenger.registerOutgoingPluginChannel(plugin, CHANNEL);
+    }
+
+    public void shutdown() {
+        plugin.getServer().getMessenger().unregisterOutgoingPluginChannel(plugin, CHANNEL);
+    }
+
     public void set(UUID id, boolean gun, boolean aim) {
+        set(id, gun, aim, false);
+    }
+
+    public void set(UUID id, boolean gun, boolean aim, boolean hipRaise) {
         byte flags = 0;
         if (gun) {
             flags |= FLAG_GUN;
         }
         if (aim) {
             flags |= FLAG_AIM;
+        } else if (hipRaise) {
+            flags |= FLAG_FIRE;
         }
         Byte prev = last.put(id, flags);
         if (prev != null && prev == flags) {
@@ -37,18 +58,23 @@ public final class GunPoseBridge {
         broadcast(id, flags);
     }
 
+    public void refresh() {
+        for (Map.Entry<UUID, Byte> entry : last.entrySet()) {
+            broadcast(entry.getKey(), entry.getValue());
+        }
+    }
+
     public void clear(UUID id) {
         last.remove(id);
         broadcast(id, (byte) 0);
     }
 
     public void syncViewer(Player viewer) {
-        WarzPlugin warz = warz();
-        if (warz == null || !companion(warz, viewer)) {
+        if (viewer == null || NpcBodies.isNpc(viewer)) {
             return;
         }
         for (Map.Entry<UUID, Byte> entry : last.entrySet()) {
-            send(warz, viewer, entry.getKey(), entry.getValue());
+            send(viewer, entry.getKey(), entry.getValue());
         }
     }
 
@@ -60,26 +86,29 @@ public final class GunPoseBridge {
     }
 
     private void broadcast(UUID id, byte flags) {
-        WarzPlugin warz = warz();
-        if (warz == null) {
-            return;
-        }
         for (Player viewer : Bukkit.getOnlinePlayers()) {
-            if (companion(warz, viewer)) {
-                send(warz, viewer, id, flags);
+            if (!NpcBodies.isNpc(viewer)) {
+                send(viewer, id, flags);
             }
         }
     }
 
-    private static void send(WarzPlugin warz, Player viewer, UUID id, byte flags) {
+    private void send(Player viewer, UUID id, byte flags) {
         byte[] payload = encode(id, flags);
-        if (payload != null) {
-            viewer.sendPluginMessage(warz, CHANNEL, payload);
+        if (payload == null) {
+            return;
         }
-    }
-
-    private static boolean companion(WarzPlugin warz, Player viewer) {
-        return warz.companions() != null && warz.companions().hasCompanion(viewer);
+        try {
+            viewer.sendPluginMessage(plugin, CHANNEL, payload);
+        } catch (Exception ignored) {
+        }
+        WarzPlugin warz = warz();
+        if (warz != null) {
+            try {
+                viewer.sendPluginMessage(warz, CHANNEL, payload);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private static WarzPlugin warz() {

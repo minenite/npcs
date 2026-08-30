@@ -44,6 +44,9 @@ public final class TabListPackets {
 
     public void hideAll(Collection<CivilianNpc> npcs) {
         for (Player viewer : plugin.getServer().getOnlinePlayers()) {
+            if (viewer.getScoreboardTags().contains("minenite_npc")) {
+                continue;
+            }
             for (CivilianNpc npc : npcs) {
                 hide(viewer, npc);
             }

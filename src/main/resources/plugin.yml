@@ -1,9 +1,9 @@
 name: npcs
-version: 1.0.2
+version: 1.0.3
 main: net.minenite.npcs.NpcsPlugin
 api-version: '1.21'
 author: icedmoca
-description: WarZ civilian player-NPCs — wander, talk, aim back, drop corpses.
+description: WarZ civilian player-NPCs — draw, ADS, talk, die, drop corpses.
 softdepend: [WarzPlugin, ServerPlugin]
 
 commands:

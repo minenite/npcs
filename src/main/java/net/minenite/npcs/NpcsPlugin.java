@@ -8,8 +8,8 @@ import net.minenite.npcs.tab.TabListPackets;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * WarZ civilian NPCs: player-skinned mannequins that wander, talk, and die
- * like people rather than mobs.
+ * WarZ civilian NPCs: fake players that wander, talk, draw, ADS, and die
+ * like people rather than props.
  */
 public final class NpcsPlugin extends JavaPlugin {
 
