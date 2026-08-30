@@ -1,0 +1,19 @@
+name: npcs
+version: 1.0.0
+main: net.minenite.npcs.NpcsPlugin
+api-version: '1.21'
+author: icedmoca
+description: WarZ civilian player-NPCs — wander, talk, aim back, drop corpses.
+softdepend: [WarzPlugin, ServerPlugin]
+
+commands:
+  npc:
+    description: Spawn and manage civilian NPCs.
+    usage: /npc spawn civilian | /npc remove [near|all] | /npc list
+    aliases: [npcs]
+    permission: npcs.admin
+
+permissions:
+  npcs.admin:
+    description: Spawn and remove civilian NPCs.
+    default: op

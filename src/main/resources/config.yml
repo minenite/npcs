@@ -1,0 +1,34 @@
+# Skin applied to every civilian (Mojang username). Cached after first fetch.
+skin-username: DirtyCivilian
+
+# Local Ollama. phi3:mini is already on this machine and answers fast enough
+# for spoken lines. llama3.1:8b works if you want richer talk.
+llm:
+  endpoint: http://127.0.0.1:11434/api/chat
+  model: phi3:mini
+  timeout-ms: 8000
+  max-tokens: 70
+  temperature: 0.9
+
+civilian:
+  health: 16
+  walk-speed: 0.13
+  wander-min: 7
+  wander-max: 22
+  idle-ticks-min: 50
+  idle-ticks-max: 180
+  aim-range: 42
+  aim-dot: 0.94
+  talk-cooldown-ms: 9000
+  pistols:
+    - m9
+    - usp45
+    - warz_m1911
+    - warz_fiveseven
+    - warz_deserteagle
+    - python
+    - magnum
+    - deserteagle
+
+corpses:
+  lifetime-seconds: 180
