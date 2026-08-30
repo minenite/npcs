@@ -10,6 +10,7 @@ import net.minenite.npcs.corpse.CorpseSpawner;
 import net.minenite.npcs.skin.SkinService;
 import net.minenite.npcs.tab.TabListPackets;
 import net.minenite.warzplugin.WarzPlugin;
+import io.papermc.paper.entity.LookAnchor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.NamespacedKey;
@@ -17,6 +18,8 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Pose;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
@@ -93,10 +96,10 @@ public final class NpcManager implements Listener {
             mannequin.setRemoveWhenFarAway(false);
             mannequin.setInvulnerable(false);
             mannequin.setSilent(false);
-            mannequin.setGravity(true);
+            mannequin.setGravity(false);
             mannequin.setAI(false);
             mannequin.setCollidable(true);
-            mannequin.setImmovable(false);
+            mannequin.setImmovable(true);
             mannequin.customName(Component.text(name));
             mannequin.setCustomNameVisible(true);
             mannequin.setDescription(null);
@@ -167,22 +170,25 @@ public final class NpcManager implements Listener {
             if (npc.mood() == CivilianNpc.Mood.AIMED && npc.aimHold() <= 0) {
                 npc.setMood(CivilianNpc.Mood.IDLE);
                 npc.setIdleLeft(30 + ThreadLocalRandom.current().nextInt(50));
+                lowerGun(body);
             }
             if (npc.mood() == CivilianNpc.Mood.WALK) {
                 Location next = npc.stepWalk();
                 if (next != null) {
-                    Location grounded = WanderEngine.ground(next);
-                    Location use = grounded != null ? grounded : next;
+                    Location use = WanderEngine.keepXZ(next);
+                    if (use == null) {
+                        use = next;
+                    }
                     use.setYaw(npc.lookYaw());
-                    use.setPitch(npc.lookPitch());
+                    use.setPitch(0f);
                     body.teleport(use);
-                    body.setRotation(npc.lookYaw(), npc.lookPitch());
+                    face(body, npc.lookYaw(), 0f);
                 }
                 continue;
             }
             npc.decIdle();
             npc.idleGlance();
-            body.setRotation(npc.lookYaw(), npc.lookPitch());
+            face(body, npc.lookYaw(), npc.lookPitch());
             if (npc.idleLeft() <= 0) {
                 WanderEngine.plan(npc, body.getLocation(),
                         plugin.getConfig().getDouble("civilian.wander-min", 7),
@@ -194,16 +200,55 @@ public final class NpcManager implements Listener {
     }
 
     private void handleAimed(CivilianNpc npc, Mannequin body, Player aimer) {
-        boolean first = npc.aimedBy() == null || !npc.aimedBy().equals(aimer.getUniqueId());
         npc.setAimedBy(aimer.getUniqueId());
         npc.setMood(CivilianNpc.Mood.AIMED);
         npc.clearWalk();
-        Location eyes = body.getEyeLocation();
-        npc.lookAt(eyes, aimer.getEyeLocation());
-        body.setRotation(npc.lookYaw(), npc.lookPitch());
-        if (first || (npc.canTalk() && System.currentTimeMillis() - npc.lastTalkAt()
-                > plugin.getConfig().getLong("civilian.talk-cooldown-ms", 9000L))) {
+        aimGun(body, aimer);
+        if (!npc.aimSpoken() && npc.canTalk()) {
+            npc.markAimSpoken();
             talk.aimedAt(npc, aimer);
+        }
+    }
+
+    private void aimGun(Mannequin body, Player aimer) {
+        Location target = aimer.getEyeLocation();
+        try {
+            body.lookAt(target.getX(), target.getY(), target.getZ(), LookAnchor.EYES);
+        } catch (Exception ignored) {
+        }
+        Location from = body.getEyeLocation();
+        org.bukkit.util.Vector delta = target.toVector().subtract(from.toVector());
+        float yaw = (float) Math.toDegrees(Math.atan2(-delta.getX(), delta.getZ()));
+        double horiz = Math.sqrt(delta.getX() * delta.getX() + delta.getZ() * delta.getZ());
+        float pitch = (float) Math.toDegrees(-Math.atan2(delta.getY(), Math.max(0.001, horiz)));
+        face(body, yaw, pitch);
+        if (Mannequin.validPoses().contains(Pose.SHOOTING)) {
+            body.setPose(Pose.SHOOTING);
+        } else if (Mannequin.validPoses().contains(Pose.SNEAKING)) {
+            body.setPose(Pose.SNEAKING);
+        }
+        try {
+            body.startUsingItem(EquipmentSlot.HAND);
+            body.setActiveItemRemainingTime(Math.max(10, body.getActiveItemRemainingTime()));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void lowerGun(Mannequin body) {
+        try {
+            body.clearActiveItem();
+        } catch (Exception ignored) {
+        }
+        if (Mannequin.validPoses().contains(Pose.STANDING)) {
+            body.setPose(Pose.STANDING);
+        }
+    }
+
+    private static void face(Mannequin body, float yaw, float pitch) {
+        body.setRotation(yaw, pitch);
+        try {
+            body.setBodyYaw(yaw);
+        } catch (Exception ignored) {
         }
     }
 
@@ -295,7 +340,7 @@ public final class NpcManager implements Listener {
             return;
         }
         Player killer = killer(event.getDamager());
-        if (killer != null && npc.canTalk()) {
+        if (killer != null && npc.canTalk() && npc.mood() != CivilianNpc.Mood.AIMED) {
             talk.aimedAt(npc, killer);
         }
     }

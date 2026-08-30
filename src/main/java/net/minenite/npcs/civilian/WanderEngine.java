@@ -41,15 +41,45 @@ public final class WanderEngine {
         Vector mid = dest.toVector().subtract(here.toVector()).multiply(0.5);
         Vector side = new Vector(-mid.getZ(), 0, mid.getX());
         if (side.lengthSquared() > 1.0e-4) {
-            side.normalize().multiply((rng.nextDouble() - 0.5) * 6.0);
+            side.normalize().multiply((rng.nextDouble() - 0.5) * 1.4);
         }
-        Location via = ground(here.clone().add(mid).add(side));
+        Location via = keepXZ(here.clone().add(mid).add(side));
         if (via == null) {
             via = here.clone().add(mid);
         }
-        double length = here.distance(dest) + 2.0;
-        int ticks = (int) Math.max(30, length / Math.max(0.06, speed));
+        double length = Math.hypot(dest.getX() - here.getX(), dest.getZ() - here.getZ());
+        int ticks = (int) Math.max(25, length / Math.max(0.08, speed));
         npc.beginWalk(here, via, dest, ticks);
+    }
+
+    /** Snap Y to the floor under this exact XZ — do not jump to block center. */
+    public static Location keepXZ(Location at) {
+        Double y = floorY(at);
+        if (y == null) {
+            return null;
+        }
+        Location loc = at.clone();
+        loc.setY(y);
+        return loc;
+    }
+
+    public static Double floorY(Location at) {
+        World world = at.getWorld();
+        if (world == null) {
+            return null;
+        }
+        int x = at.getBlockX();
+        int z = at.getBlockZ();
+        int start = at.getBlockY();
+        for (int y = start + 2; y >= start - 4; y--) {
+            Block feet = world.getBlockAt(x, y, z);
+            Block below = world.getBlockAt(x, y - 1, z);
+            if (isFloor(below.getType()) && isAirish(feet.getType())
+                    && isAirish(world.getBlockAt(x, y + 1, z).getType())) {
+                return (double) y;
+            }
+        }
+        return null;
     }
 
     public static Location ground(Location at) {

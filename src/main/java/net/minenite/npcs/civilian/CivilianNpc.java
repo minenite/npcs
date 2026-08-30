@@ -31,6 +31,8 @@ public final class CivilianNpc {
     private long lastTalkAt;
     private UUID aimedBy;
     private int aimHold;
+    private boolean aimSpoken;
+    private String lastLine;
     private boolean dead;
     private float lookYaw;
     private float lookPitch;
@@ -119,11 +121,26 @@ public final class CivilianNpc {
     }
 
     public boolean canTalk() {
-        return System.currentTimeMillis() - lastTalkAt >= 4000L;
+        return System.currentTimeMillis() - lastTalkAt >= 8000L;
     }
 
-    public void markTalked() {
+    public void markTalked(String line) {
         lastTalkAt = System.currentTimeMillis();
+        if (line != null && !line.isBlank()) {
+            lastLine = line;
+        }
+    }
+
+    public String lastLine() {
+        return lastLine;
+    }
+
+    public boolean aimSpoken() {
+        return aimSpoken;
+    }
+
+    public void markAimSpoken() {
+        aimSpoken = true;
     }
 
     public long lastTalkAt() {
@@ -135,8 +152,17 @@ public final class CivilianNpc {
     }
 
     public void setAimedBy(UUID id) {
-        this.aimedBy = id;
-        this.aimHold = id == null ? 0 : Math.max(aimHold, 8);
+        if (id == null) {
+            this.aimedBy = null;
+            this.aimHold = 0;
+            this.aimSpoken = false;
+            return;
+        }
+        if (!id.equals(this.aimedBy)) {
+            this.aimedBy = id;
+            this.aimSpoken = false;
+        }
+        this.aimHold = 50;
     }
 
     public int aimHold() {
@@ -149,6 +175,7 @@ public final class CivilianNpc {
         }
         if (aimHold <= 0) {
             aimedBy = null;
+            aimSpoken = false;
         }
     }
 
@@ -161,7 +188,7 @@ public final class CivilianNpc {
         this.walkVia = via.clone();
         this.walkTo = to.clone();
         this.walkTicks = 0;
-        this.walkMax = Math.max(20, ticks);
+        this.walkMax = Math.max(25, ticks);
         this.mood = Mood.WALK;
     }
 
@@ -176,22 +203,20 @@ public final class CivilianNpc {
         }
         walkTicks++;
         double t = Math.min(1.0, walkTicks / (double) walkMax);
-        // Ease in/out so they don't launch or slam to a stop.
-        double s = t * t * (3.0 - 2.0 * t);
         Location a = walkFrom;
         Location b = walkVia != null ? walkVia : walkTo;
         Location c = walkTo;
-        double x = quad(a.getX(), b.getX(), c.getX(), s);
-        double y = quad(a.getY(), b.getY(), c.getY(), s);
-        double z = quad(a.getZ(), b.getZ(), c.getZ(), s);
+        double x = quad(a.getX(), b.getX(), c.getX(), t);
+        double z = quad(a.getZ(), b.getZ(), c.getZ(), t);
+        double y = a.getY() + (c.getY() - a.getY()) * t;
         Location at = new Location(a.getWorld(), x, y, z);
         Vector ahead = new Vector(
-                quad(a.getX(), b.getX(), c.getX(), Math.min(1.0, s + 0.05)) - x,
+                quad(a.getX(), b.getX(), c.getX(), Math.min(1.0, t + 0.04)) - x,
                 0,
-                quad(a.getZ(), b.getZ(), c.getZ(), Math.min(1.0, s + 0.05)) - z);
+                quad(a.getZ(), b.getZ(), c.getZ(), Math.min(1.0, t + 0.04)) - z);
         if (ahead.lengthSquared() > 1.0e-6) {
             lookYaw = yawOf(ahead);
-            lookPitch = 4f * (float) Math.sin(walkTicks / 9.0);
+            lookPitch = 0f;
         }
         if (walkTicks >= walkMax) {
             clearWalk();

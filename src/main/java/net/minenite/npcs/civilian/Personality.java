@@ -199,11 +199,19 @@ public enum Personality {
     }
 
     public String aimedLine() {
-        return pick(aimedLines);
+        return pick(aimedLines, null);
+    }
+
+    public String aimedLine(String avoid) {
+        return pick(aimedLines, avoid);
     }
 
     public String ambientLine() {
-        return pick(ambientLines);
+        return pick(ambientLines, null);
+    }
+
+    public String ambientLine(String avoid) {
+        return pick(ambientLines, avoid);
     }
 
     public static Personality random() {
@@ -211,7 +219,14 @@ public enum Personality {
         return all[ThreadLocalRandom.current().nextInt(all.length)];
     }
 
-    private static String pick(List<String> lines) {
-        return lines.get(ThreadLocalRandom.current().nextInt(lines.size()));
+    private static String pick(List<String> lines, String avoid) {
+        if (lines.size() == 1) {
+            return lines.get(0);
+        }
+        String line = lines.get(ThreadLocalRandom.current().nextInt(lines.size()));
+        if (avoid != null && avoid.equals(line)) {
+            return lines.get(ThreadLocalRandom.current().nextInt(lines.size()));
+        }
+        return line;
     }
 }
