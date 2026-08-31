@@ -6,6 +6,9 @@ import net.kyori.adventure.text.Component;
 import net.minenite.npcs.NpcsPlugin;
 import net.minenite.npcs.chat.ConversationDirector;
 import net.minenite.npcs.chat.LlmTalk;
+import net.minenite.npcs.cognition.PersistLives;
+import net.minenite.npcs.cognition.SoundHook;
+import net.minenite.npcs.cognition.SoundWorld;
 import net.minenite.npcs.mind.Mood;
 import net.minenite.npcs.mind.WorldMemory;
 import net.minenite.npcs.corpse.CorpseOpen;
@@ -46,6 +49,8 @@ public final class NpcManager implements Listener {
     private final LlmTalk talk;
     private final ConversationDirector social;
     private final WorldMemory street;
+    private final PersistLives lives;
+    private final SoundWorld sounds;
     private final TabListPackets tab;
     private final LoadoutService loadouts;
     private final CorpseSpawner corpses;
@@ -57,22 +62,25 @@ public final class NpcManager implements Listener {
     private BukkitTask tick;
 
     public NpcManager(NpcsPlugin plugin, SkinService skins, LlmTalk talk, TabListPackets tab,
-                     ConversationDirector social, WorldMemory street) {
+                     ConversationDirector social, WorldMemory street, PersistLives lives) {
         this.plugin = plugin;
         this.skins = skins;
         this.talk = talk;
         this.social = social;
         this.street = street;
+        this.lives = lives;
         this.tab = tab;
+        this.sounds = new SoundWorld();
         this.loadouts = new LoadoutService(plugin);
         CorpseOpen opens = new CorpseOpen(plugin);
         this.corpses = new CorpseSpawner(plugin, opens);
         this.poses = new GunPoseBridge(plugin);
         this.equipment = new EquipmentPackets(plugin);
-        this.brain = new CivilianBrain(plugin, talk, poses, equipment, social, this::all);
+        this.brain = new CivilianBrain(plugin, talk, poses, equipment, social, this::all, sounds);
         this.npcKey = NpcBodies.key();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
         plugin.getServer().getPluginManager().registerEvents(opens, plugin);
+        plugin.getServer().getPluginManager().registerEvents(new SoundHook(plugin, sounds), plugin);
     }
 
     public void start() {
@@ -85,6 +93,7 @@ public final class NpcManager implements Listener {
         }
         poses.clearAll();
         poses.shutdown();
+        lives.capture(all());
         tab.hideAll(List.copyOf(byId.values()));
         for (CivilianNpc npc : List.copyOf(byId.values())) {
             removeBody(npc, false);
@@ -96,6 +105,10 @@ public final class NpcManager implements Listener {
         Personality personality = Personality.random();
         String name = unique(CivilianNames.roll(personality));
         UUID id = UUID.nameUUIDFromBytes(("npc:" + name + ":" + System.nanoTime()).getBytes());
+        return spawnCivilian(at, id, name, personality);
+    }
+
+    public CivilianNpc spawnCivilian(Location at, UUID id, String name, Personality personality) {
         LoadoutService.Kit kit = loadouts.roll();
         CivilianNpc npc = new CivilianNpc(id, name, personality, skins.textures(),
                 kit.gun(), kit.spare(), extras(kit));
@@ -133,6 +146,61 @@ public final class NpcManager implements Listener {
             }
         }
         return npc;
+    }
+
+    public void restore() {
+        if (lives == null) {
+            return;
+        }
+        for (PersistLives.Snap snap : lives.pending()) {
+            if (snap == null || snap.name == null) {
+                continue;
+            }
+            if (lives.buried(snap.name)) {
+                continue;
+            }
+            UUID id = lives.id(snap);
+            if (byId.containsKey(id) || byName(snap.name) != null) {
+                continue;
+            }
+            Location at = lives.location(snap);
+            if (at == null || at.getWorld() == null) {
+                continue;
+            }
+            CivilianNpc npc = spawnCivilian(at, id, snap.name, lives.personality(snap));
+            lives.apply(npc, snap);
+            plugin.getLogger().info("Restored civilian " + npc.name());
+        }
+    }
+
+    public CivilianNpc nearestTo(Location at) {
+        CivilianNpc best = null;
+        double bestD = 64 * 64;
+        for (CivilianNpc npc : byId.values()) {
+            LivingEntity body = NpcBodies.living(npc);
+            if (body == null) {
+                continue;
+            }
+            double d = body.getLocation().distanceSquared(at);
+            if (d < bestD) {
+                bestD = d;
+                best = npc;
+            }
+        }
+        return best;
+    }
+
+    public CivilianNpc byName(String name) {
+        for (CivilianNpc npc : byId.values()) {
+            if (npc.name().equalsIgnoreCase(name)) {
+                return npc;
+            }
+        }
+        return null;
+    }
+
+    public void snapshotLives() {
+        lives.capture(all());
     }
 
     private Mannequin spawnMannequin(Location place, UUID id, String name, PlayerProfile profile,
@@ -350,6 +418,7 @@ public final class NpcManager implements Listener {
         Location at = body.getLocation();
         npc.markDead();
         social.endFor(npc);
+        lives.bury(npc);
         if (killer != null) {
             npc.mind().did("dying because of " + killer.getName());
             street.mark(killer.getUniqueId(), killer.getName(), -4,

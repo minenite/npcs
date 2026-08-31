@@ -37,10 +37,14 @@ public final class TalkPrompt {
         return npc.personality().systemPrompt()
                 + "\nYour name here is " + name + ". You carry " + gun + "."
                 + "\nYou remember what happened to you. You use it. You do not invent a backstory that is not below."
-                + "\nYou remember:\n" + npc.mind().digest(10)
+                + "\nYou remember:\n" + npc.cog().memoryForLlm()
+                + npc.cog().talk.threadForPrompt()
                 + "\nThe street has been saying: " + street.digest(npc.body() == null ? null : npc.body().getLocation(), 4)
                 + (env == null ? "" : "\nRight now: " + env.plain())
-                + "\nOutput ONLY the words you speak. No quotes. No name prefix. No stage directions. 1 sentence, 2 if scared.";
+                + "\nSpeak-intent: " + npc.cog().whyTalk.name()
+                + "\nOutput ONLY the words you speak. No quotes. No name prefix. No stage directions."
+                + " One word is fine. Two sentences max. Do not narrate feelings. Do not tell them what they already know."
+                + " If you would not talk, output nothing.";
     }
 
     public static String user(Beat beat, String extra) {

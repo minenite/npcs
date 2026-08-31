@@ -1,6 +1,8 @@
 package net.minenite.npcs.civilian;
 
+import net.minenite.npcs.cognition.Cognition;
 import net.minenite.npcs.mind.CivilianMind;
+import net.minenite.npcs.nav.HumanNav;
 import net.minenite.npcs.skin.SkinService;
 import org.bukkit.Location;
 import org.bukkit.entity.LivingEntity;
@@ -25,6 +27,7 @@ public final class CivilianNpc {
     private final ItemStack gun;
     private final ItemStack spareMag;
     private final CivilianMind mind = new CivilianMind();
+    private final Cognition cog;
     private UUID entityId;
     private LivingEntity body;
     private boolean fakePlayer;
@@ -72,6 +75,7 @@ public final class CivilianNpc {
     private UUID following;
     private int followLeft;
     private int mournLeft;
+    private HumanNav.Route route;
 
     public CivilianNpc(UUID id, String name, Personality personality, SkinService.Textures textures,
                        ItemStack gun, ItemStack spareMag, List<ItemStack> extras) {
@@ -81,6 +85,7 @@ public final class CivilianNpc {
         this.textures = textures;
         this.gun = gun;
         this.spareMag = spareMag;
+        this.cog = new Cognition(personality, name, 0, 0);
         if (gun != null) {
             loot.add(gun.clone());
         }
@@ -133,6 +138,20 @@ public final class CivilianNpc {
         this.lookPitch = 0f;
         this.idleLeft = 20 + (int) (Math.random() * 40);
         this.nextDecision = 15;
+        this.cog.life.homeX = body.getLocation().getX() + (Math.random() - 0.5) * 24;
+        this.cog.life.homeZ = body.getLocation().getZ() + (Math.random() - 0.5) * 24;
+    }
+
+    public Cognition cog() {
+        return cog;
+    }
+
+    public HumanNav.Route route() {
+        return route;
+    }
+
+    public void setRoute(HumanNav.Route route) {
+        this.route = route;
     }
 
     public State state() {

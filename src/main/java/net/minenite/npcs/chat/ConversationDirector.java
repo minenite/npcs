@@ -83,12 +83,21 @@ public final class ConversationDirector {
                 continue;
             }
             npc.mind().heard(player.getName(), line);
+            npc.cog().talk.hear(player.getName(), line);
+            npc.cog().talk.with = player.getUniqueId();
+            npc.cog().whyTalk = net.minenite.npcs.cognition.TalkWhy.ASK;
             npc.mind().met(player.getUniqueId(), player.getName(), 0, "said: " + clip(line, 80));
             street.hear(player.getLocation(), player.getName() + " said: " + clip(line, 80));
             bestD = d;
             best = npc;
         }
         if (best == null) {
+            return;
+        }
+        if (best.cog().intention == net.minenite.npcs.cognition.Intention.SILENCE
+                || (best.cog().drives.fear > 0.7 && ThreadLocalRandom.current().nextBoolean())) {
+            lookAt(best, player);
+            best.cog().whyTalk = net.minenite.npcs.cognition.TalkWhy.NONE;
             return;
         }
         best.mind().feel(Mood.WARY, 20);
@@ -128,6 +137,16 @@ public final class ConversationDirector {
                 if (inThread(a.id()) || inThread(b.id())) {
                     continue;
                 }
+                if (a.cog().intention == net.minenite.npcs.cognition.Intention.SILENCE
+                        || b.cog().intention == net.minenite.npcs.cognition.Intention.SILENCE) {
+                    continue;
+                }
+                if (a.cog().drives.loneliness < 0.32 && b.cog().drives.loneliness < 0.32) {
+                    continue;
+                }
+                if (rng.nextInt(5) != 0) {
+                    continue;
+                }
                 if (a.personality() == net.minenite.npcs.civilian.Personality.PARANOID_LONER
                         && rng.nextInt(4) != 0) {
                     continue;
@@ -154,6 +173,8 @@ public final class ConversationDirector {
         b.mind().did("stopped to talk to " + a.name());
         a.mind().met(b.id(), b.name(), 1, "talking");
         b.mind().met(a.id(), a.name(), 1, "talking");
+        passGossip(a, b);
+        passGossip(b, a);
         talk.toCivilian(a, b, cue(a, b));
     }
 
@@ -265,6 +286,10 @@ public final class ConversationDirector {
     }
 
     private boolean free(CivilianNpc npc) {
+        if (npc.cog().intention == net.minenite.npcs.cognition.Intention.SILENCE
+                || npc.cog().intention.combat()) {
+            return false;
+        }
         return npc.alive() && !busy(npc) && !inThread(npc.id())
                 && (npc.state() == CivilianNpc.State.STAND
                 || npc.state() == CivilianNpc.State.SCAN
@@ -317,6 +342,20 @@ public final class ConversationDirector {
         if (body != null) {
             npc.lookToward(body.getEyeLocation(), player.getEyeLocation(), 0.24f, 0.12f);
         }
+    }
+
+    private static void passGossip(CivilianNpc from, CivilianNpc to) {
+        if (from.cog().rumors.isEmpty()) {
+            return;
+        }
+        net.minenite.npcs.cognition.Rumor rumor = from.cog().rumors.get(from.cog().rumors.size() - 1);
+        net.minenite.npcs.cognition.Rumor next = rumor.mutate();
+        next.source = from.id();
+        next.sourceName = from.name();
+        if (next.originalWitness == null) {
+            next.originalWitness = rumor.originalWitness == null ? from.id() : rumor.originalWitness;
+        }
+        to.cog().hearRumor(next);
     }
 
     private static String clip(String text, int max) {

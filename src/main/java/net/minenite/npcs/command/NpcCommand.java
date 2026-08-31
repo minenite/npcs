@@ -29,7 +29,7 @@ public final class NpcCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         if (args.length == 0) {
-            sender.sendMessage(Component.text("/npc spawn civilian | /npc remove [near|all] | /npc list",
+            sender.sendMessage(Component.text("/npc spawn civilian | /npc remove [near|all] | /npc list | /npc debug | /npc test",
                     NamedTextColor.YELLOW));
             return true;
         }
@@ -38,6 +38,8 @@ public final class NpcCommand implements CommandExecutor, TabCompleter {
             case "spawn" -> spawn(sender, args);
             case "remove", "kill", "despawn" -> remove(sender, args);
             case "list" -> list(sender);
+            case "debug" -> debug(sender, args);
+            case "test" -> test(sender);
             default -> {
                 sender.sendMessage(Component.text("Unknown subcommand.", NamedTextColor.RED));
                 yield true;
@@ -96,10 +98,31 @@ public final class NpcCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean debug(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(Component.text("Players only.", NamedTextColor.RED));
+            return true;
+        }
+        CivilianNpc npc = args.length >= 2 ? npcs.byName(args[1]) : npcs.nearestTo(player.getLocation());
+        if (npc == null) {
+            sender.sendMessage(Component.text("No civilian nearby.", NamedTextColor.GRAY));
+            return true;
+        }
+        net.minenite.npcs.cognition.DebugDump.send(sender, npc);
+        return true;
+    }
+
+    private boolean test(CommandSender sender) {
+        for (String line : net.minenite.npcs.cognition.Probe.run()) {
+            sender.sendMessage(Component.text(line, NamedTextColor.AQUA));
+        }
+        return true;
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 1) {
-            return prefix(List.of("spawn", "remove", "list"), args[0]);
+            return prefix(List.of("spawn", "remove", "list", "debug", "test"), args[0]);
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("spawn")) {
             return prefix(List.of("civilian"), args[1]);

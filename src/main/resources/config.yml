@@ -31,5 +31,10 @@ civilian:
     - magnum
     - deserteagle
 
+# Higher-level cognition. Combat/movement stay deterministic.
+cognition:
+  slow-llm: true
+  offscreen-range: 96
+
 corpses:
   lifetime-seconds: 180

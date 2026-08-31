@@ -70,6 +70,12 @@ public final class LlmTalk {
     }
 
     public void ambient(CivilianNpc npc, Player near) {
+        if (npc.cog().intention == net.minenite.npcs.cognition.Intention.SILENCE
+                || npc.cog().whyTalk == net.minenite.npcs.cognition.TalkWhy.NONE
+                        && npc.cog().traits.talkativeness < 0.45) {
+            return;
+        }
+        npc.cog().whyTalk = net.minenite.npcs.cognition.TalkWhy.GREET;
         speak(npc, near, TalkPrompt.Beat.PLAYER, extraPlayer(npc, near),
                 npc.personality().ambientLine(npc.lastLine()));
     }
@@ -121,6 +127,7 @@ public final class LlmTalk {
                 return;
             }
             utter(npc, to, line == null || line.isBlank() ? fallback : line);
+            npc.cog().talk.weSaid(line == null || line.isBlank() ? fallback : line);
         });
     }
 
@@ -161,6 +168,7 @@ public final class LlmTalk {
             }
             if (otherBody.getLocation().distanceSquared(at) <= rangeSq) {
                 other.mind().heard(npc.name(), line);
+                other.cog().talk.hear(npc.name(), line);
             }
         }
     }
