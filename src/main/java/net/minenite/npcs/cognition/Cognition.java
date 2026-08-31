@@ -49,6 +49,7 @@ public final class Cognition {
     public String lastAction = "";
     public boolean offscreen;
     public int pathFailStreak;
+    public int pathCool;
     public UUID waitFor;
     public long waitForUntil;
     public int offscreenClock;
@@ -199,6 +200,11 @@ public final class Cognition {
     }
 
     public void expect(String text, long ms) {
+        for (Expectation e : expect) {
+            if (!e.broken && e.text != null && e.text.equals(text)) {
+                return;
+            }
+        }
         Expectation e = new Expectation();
         e.text = text;
         e.by = System.currentTimeMillis() + ms;

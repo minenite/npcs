@@ -3,12 +3,20 @@ package net.minenite.npcs.cognition;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.block.Block;
+import org.bukkit.util.Vector;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Semantic places from what is actually around, plus coordinates.
  */
 public final class Places {
+    private static final Map<Long, Cached> PLACE_CACHE = new ConcurrentHashMap<>();
+
+    private record Cached(String label, long at) {
+    }
+
     private Places() {
     }
 
@@ -16,15 +24,24 @@ public final class Places {
         if (loc == null || loc.getWorld() == null) {
             return "somewhere";
         }
-        World world = loc.getWorld();
         int x = loc.getBlockX();
         int y = loc.getBlockY();
         int z = loc.getBlockZ();
+        long key = (((long) x >> 2) << 32) ^ (z >> 2);
+        Cached hit = PLACE_CACHE.get(key);
+        long now = System.currentTimeMillis();
+        if (hit != null && now - hit.at < 8_000L) {
+            return hit.label;
+        }
+        if (PLACE_CACHE.size() > 64) {
+            PLACE_CACHE.clear();
+        }
+        World world = loc.getWorld();
         int wood = 0, stone = 0, glass = 0, road = 0, tree = 0, chest = 0, bed = 0, brew = 0, iron = 0;
         boolean roof = false;
-        for (int dx = -6; dx <= 6; dx++) {
-            for (int dz = -6; dz <= 6; dz++) {
-                for (int dy = -1; dy <= 4; dy++) {
+        for (int dx = -6; dx <= 6; dx += 2) {
+            for (int dz = -6; dz <= 6; dz += 2) {
+                for (int dy = 0; dy <= 3; dy += 1) {
                     Material m = world.getBlockAt(x + dx, y + dy, z + dz).getType();
                     String n = m.name();
                     if (n.contains("PLANKS") || n.contains("LOG") || n.contains("WOOD")) {
@@ -82,7 +99,27 @@ public final class Places {
         } else {
             name = "open ground";
         }
-        return name + " (" + x + ", " + z + ")";
+        String label = name + " (" + x + ", " + z + ")";
+        PLACE_CACHE.put(key, new Cached(label, now));
+        return label;
+    }
+
+    /** Cheap: is there a solid next to me? No ray traces. */
+    public static double coverHint(Location loc) {
+        if (loc == null || loc.getWorld() == null) {
+            return 0.1;
+        }
+        World world = loc.getWorld();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        int solids = 0;
+        for (int[] d : new int[][]{{2, 0}, {-2, 0}, {0, 2}, {0, -2}, {2, 2}, {-2, 2}, {2, -2}, {-2, -2}}) {
+            if (world.getBlockAt(x + d[0], y, z + d[1]).getType().isSolid()) {
+                solids++;
+            }
+        }
+        return solids >= 2 ? 0.5 : solids == 1 ? 0.25 : 0.1;
     }
 
     public static String afford(Location loc) {
@@ -140,44 +177,43 @@ public final class Places {
         World world = here.getWorld();
         Location best = null;
         double bestScore = -1e9;
-        for (int dx = -6; dx <= 6; dx++) {
-            for (int dz = -6; dz <= 6; dz++) {
-                if (dx * dx + dz * dz < 4) {
-                    continue;
-                }
-                Location cand = here.clone().add(dx, 0, dz);
-                Block wall = world.getBlockAt(cand.getBlockX(), cand.getBlockY(), cand.getBlockZ());
-                Block feet = world.getBlockAt(cand.getBlockX(), cand.getBlockY(), cand.getBlockZ());
-                if (feet.getType().isSolid()) {
-                    continue;
-                }
-                boolean blocked = false;
-                if (threat != null) {
+        int[][] dirs = {{4, 0}, {-4, 0}, {0, 4}, {0, -4}, {3, 3}, {-3, 3}, {3, -3}, {-3, -3},
+                {6, 0}, {-6, 0}, {0, 6}, {0, -6}};
+        for (int[] d : dirs) {
+            Location cand = here.clone().add(d[0], 0, d[1]);
+            if (world.getBlockAt(cand.getBlockX(), cand.getBlockY(), cand.getBlockZ()).getType().isSolid()) {
+                continue;
+            }
+            boolean blocked = false;
+            if (threat != null && threat.getWorld() == world) {
+                Vector to = threat.toVector().subtract(cand.toVector());
+                double dist = to.length();
+                if (dist > 0.4) {
                     var hit = world.rayTraceBlocks(cand.clone().add(0, 1.4, 0),
-                            threat.toVector().subtract(cand.toVector()).normalize(),
-                            threat.distance(cand), org.bukkit.FluidCollisionMode.NEVER, true);
+                            to.multiply(1.0 / dist), Math.min(dist, 18),
+                            org.bukkit.FluidCollisionMode.NEVER, true);
                     blocked = hit != null;
                 }
-                int open = 0;
-                for (int[] d : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
-                    if (!world.getBlockAt(cand.getBlockX() + d[0], cand.getBlockY(), cand.getBlockZ() + d[1])
-                            .getType().isSolid()) {
-                        open++;
-                    }
+            } else if (world.getBlockAt(cand.getBlockX() + Integer.signum(d[0]), cand.getBlockY(),
+                    cand.getBlockZ() + Integer.signum(d[1])).getType().isSolid()) {
+                blocked = true;
+            }
+            int open = 0;
+            for (int[] n : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                if (!world.getBlockAt(cand.getBlockX() + n[0], cand.getBlockY(), cand.getBlockZ() + n[1])
+                        .getType().isSolid()) {
+                    open++;
                 }
-                if (open <= 1) {
-                    continue;
-                }
-                double distThreat = threat == null ? 4 : cand.distance(threat);
-                double score = (blocked ? 4 : 0) + distThreat * 0.15 + open * 0.4
-                        - cand.distance(here) * 0.2;
-                if (wall.getRelative(0, 0, 0).getType().isSolid()) {
-                    continue;
-                }
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = cand;
-                }
+            }
+            if (open <= 1) {
+                continue;
+            }
+            double distThreat = threat == null ? 4 : cand.distance(threat);
+            double score = (blocked ? 4 : 0) + distThreat * 0.15 + open * 0.4
+                    - cand.distance(here) * 0.2;
+            if (score > bestScore) {
+                bestScore = score;
+                best = cand;
             }
         }
         return best;

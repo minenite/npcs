@@ -85,7 +85,7 @@ public final class CivilianBrain {
         Player near = nearest(body, 18);
         Player armed = armedNear(body, 20);
         Player shooter = shooterNear(body, 28);
-        boolean corpse = EnvironmentSense.corpseNear(body);
+        boolean corpse = body.getTicksLived() % 12 == 0 && EnvironmentSense.corpseNear(body);
         SoundWorld.Pulse pulse = sounds == null ? null : sounds.hear(body.getLocation(), cog.traits);
         double nearestPlayer = Double.MAX_VALUE;
         for (Player p : body.getWorld().getPlayers()) {
@@ -105,8 +105,8 @@ public final class CivilianBrain {
                 aimer != null ? 0.8 : (pulse != null ? 0.25 : 0),
                 company, trusted, body.getWorld().getTime() > 13000, body.getHealth() < 10);
         if (cog.offscreen) {
-            WorldCue far = Perception.cue(npc, body, near, armed, aimer, corpse, pulse, roster.get());
             if (cog.due(false)) {
+                WorldCue far = Perception.cue(npc, body, near, armed, aimer, corpse, pulse, roster.get());
                 Utility.pick(cog, far);
             }
             net.minenite.npcs.cognition.Offscreen.tick(npc, body);
@@ -114,7 +114,9 @@ public final class CivilianBrain {
             return;
         }
 
-        Groups.tick(npc, roster.get());
+        if (body.getTicksLived() % 15 == 0) {
+            Groups.tick(npc, roster.get());
+        }
 
         if (pulse != null && System.currentTimeMillis() - cog.lastSoundAt > 400) {
             cog.lastSound = pulse.kind.name().toLowerCase();
@@ -147,8 +149,14 @@ public final class CivilianBrain {
                 cog.drives.suspicion = DriveSet.clamp(cog.drives.suspicion + 0.08);
                 cog.drives.curiosity = DriveSet.clamp(cog.drives.curiosity + 0.05);
             }
+            String place = Places.at(near.getLocation());
+            var prev = cog.lastSeen.get(near.getUniqueId());
+            if (prev != null && prev.place != null && !prev.place.isBlank()
+                    && System.currentTimeMillis() - prev.at < 5_000L) {
+                place = prev.place;
+            }
             cog.saw(near.getUniqueId(), near.getName(), near.getLocation(),
-                    Places.at(near.getLocation()), near.getLocation().getYaw(), 0.82);
+                    place, near.getLocation().getYaw(), 0.82);
             cog.attend(near.getUniqueId(), near.getName(), 0.4, 30);
         } else if (near != null) {
             cog.lost(near.getUniqueId());
@@ -353,10 +361,18 @@ public final class CivilianBrain {
         if (dest == null) {
             return;
         }
+        if (npc.cog().pathCool > 0) {
+            npc.cog().pathCool--;
+        }
         if (npc.route() == null || npc.stuck(body.getLocation()) || npc.route().i >= npc.route().points.size()) {
+            if (npc.cog().pathCool > 0) {
+                WanderEngine.planToward(npc, body.getLocation(), dest, 0.20);
+                return;
+            }
             HumanNav.Route route = HumanNav.to(body.getLocation(), dest, npc.cog());
             npc.setRoute(route);
             if (route == null) {
+                npc.cog().pathCool = 40;
                 WanderEngine.planToward(npc, body.getLocation(), dest, 0.20);
             } else {
                 npc.setState(CivilianNpc.State.WALK);

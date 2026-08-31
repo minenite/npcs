@@ -163,7 +163,7 @@ public final class Perception {
         if (friends > 0) {
             c.friendNear = 1;
         }
-        c.coverHere = Places.coverFrom(at, aimer == null ? null : aimer.getLocation()) != null ? 0.5 : 0.1;
+        c.coverHere = Places.coverHint(at);
         if (c.threat == 0) {
             c.threat = c.armedStranger * 0.4 + (1.0 - npc.cog().drives.safety) * 0.3 + c.soundConf * 0.2;
         }

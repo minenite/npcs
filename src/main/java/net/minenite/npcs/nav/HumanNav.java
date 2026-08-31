@@ -124,7 +124,7 @@ public final class HumanNav {
         gScore.put(start, 0.0);
         int guard = 0;
         N found = null;
-        while (!open.isEmpty() && guard++ < 900) {
+        while (!open.isEmpty() && guard++ < 280) {
             N cur = open.poll();
             if (!seen.add(cur)) {
                 continue;

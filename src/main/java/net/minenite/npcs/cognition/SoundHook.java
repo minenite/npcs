@@ -13,8 +13,13 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 public final class SoundHook implements Listener {
     private final SoundWorld world;
+    private final Map<UUID, Long> lastStep = new ConcurrentHashMap<>();
 
     public SoundHook(NpcsPlugin ignored, SoundWorld world) {
         this.world = world;
@@ -30,17 +35,21 @@ public final class SoundHook implements Listener {
         if (!NpcBodies.realPlayer(player) || event.getTo() == null) {
             return;
         }
-        if (event.getFrom().distanceSquared(event.getTo()) < 0.04) {
+        if (event.getFrom().getBlockX() == event.getTo().getBlockX()
+                && event.getFrom().getBlockZ() == event.getTo().getBlockZ()) {
             return;
         }
+        long now = System.currentTimeMillis();
+        Long prev = lastStep.get(player.getUniqueId());
+        if (prev != null && now - prev < 280) {
+            return;
+        }
+        lastStep.put(player.getUniqueId(), now);
         boolean sprint = player.isSprinting();
         if (sprint || player.isSwimming()) {
             world.emit(event.getTo(), SoundWorld.Kind.SPRINT, 0.7, player.getUniqueId());
-        } else if (Math.random() < 0.08) {
+        } else {
             world.emit(event.getTo(), SoundWorld.Kind.FOOT, 0.28, player.getUniqueId());
-        }
-        if (player.getScoreboardTags().contains("pgm_fire")) {
-            world.emit(player.getLocation(), SoundWorld.Kind.GUN, 1.0, player.getUniqueId());
         }
     }
 
