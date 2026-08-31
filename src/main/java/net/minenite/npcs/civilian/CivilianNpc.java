@@ -1,5 +1,6 @@
 package net.minenite.npcs.civilian;
 
+import net.minenite.npcs.mind.CivilianMind;
 import net.minenite.npcs.skin.SkinService;
 import org.bukkit.Location;
 import org.bukkit.entity.LivingEntity;
@@ -13,7 +14,7 @@ import java.util.UUID;
 public final class CivilianNpc {
     public enum State {
         STAND, SCAN, WALK, WATCH, WARY, DRAW, AIM, CIRCLE, HOLSTER,
-        BACKPEDAL, FLEE, FLINCH, INSPECT, COVER
+        BACKPEDAL, FLEE, FLINCH, INSPECT, COVER, TALK, SHELTER, FOLLOW, MOURN
     }
 
     private final UUID id;
@@ -23,6 +24,7 @@ public final class CivilianNpc {
     private final List<ItemStack> loot = new ArrayList<>();
     private final ItemStack gun;
     private final ItemStack spareMag;
+    private final CivilianMind mind = new CivilianMind();
     private UUID entityId;
     private LivingEntity body;
     private boolean fakePlayer;
@@ -65,6 +67,11 @@ public final class CivilianNpc {
     private Location lastPos;
     private int turnLeft;
     private float turnYaw;
+    private UUID talkingTo;
+    private int talkLeft;
+    private UUID following;
+    private int followLeft;
+    private int mournLeft;
 
     public CivilianNpc(UUID id, String name, Personality personality, SkinService.Textures textures,
                        ItemStack gun, ItemStack spareMag, List<ItemStack> extras) {
@@ -144,6 +151,10 @@ public final class CivilianNpc {
         dead = true;
     }
 
+    public CivilianMind mind() {
+        return mind;
+    }
+
     public ItemStack gun() {
         return gun;
     }
@@ -161,7 +172,65 @@ public final class CivilianNpc {
     }
 
     public boolean canTalk() {
-        return System.currentTimeMillis() - lastTalkAt >= 3500L;
+        return System.currentTimeMillis() - lastTalkAt >= 2200L;
+    }
+
+    public UUID talkingTo() {
+        return talkingTo;
+    }
+
+    public void setTalkingTo(UUID id) {
+        this.talkingTo = id;
+    }
+
+    public int talkLeft() {
+        return talkLeft;
+    }
+
+    public void setTalkLeft(int ticks) {
+        this.talkLeft = ticks;
+    }
+
+    public void decTalk() {
+        if (talkLeft > 0) {
+            talkLeft--;
+        }
+    }
+
+    public UUID following() {
+        return following;
+    }
+
+    public void setFollowing(UUID id) {
+        this.following = id;
+    }
+
+    public int followLeft() {
+        return followLeft;
+    }
+
+    public void setFollowLeft(int ticks) {
+        this.followLeft = ticks;
+    }
+
+    public void decFollow() {
+        if (followLeft > 0) {
+            followLeft--;
+        }
+    }
+
+    public int mournLeft() {
+        return mournLeft;
+    }
+
+    public void setMournLeft(int ticks) {
+        this.mournLeft = ticks;
+    }
+
+    public void decMourn() {
+        if (mournLeft > 0) {
+            mournLeft--;
+        }
     }
 
     public void markTalked(String line) {
@@ -455,7 +524,8 @@ public final class CivilianNpc {
                 beginTurn(yaw, 8 + (int) (Math.abs(wrap(yaw - bodyYaw)) / 18f));
             }
         }
-        if (state != State.CIRCLE && state != State.BACKPEDAL && state != State.FLEE) {
+        if (state != State.CIRCLE && state != State.BACKPEDAL && state != State.FLEE
+                && state != State.FOLLOW && state != State.SHELTER) {
             this.state = State.WALK;
         }
     }
@@ -467,7 +537,8 @@ public final class CivilianNpc {
 
     public boolean walking() {
         return walkTo != null && (state == State.WALK || state == State.FLEE
-                || state == State.BACKPEDAL || state == State.CIRCLE);
+                || state == State.BACKPEDAL || state == State.CIRCLE
+                || state == State.FOLLOW || state == State.SHELTER);
     }
 
     public Location stepWalk() {

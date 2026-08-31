@@ -89,6 +89,7 @@ public final class NpcCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(Component.text("  " + npc.name() + " — "
                     + npc.personality().name().toLowerCase(Locale.ROOT).replace('_', ' ')
                     + " [" + npc.state().name().toLowerCase(Locale.ROOT)
+                    + ", " + npc.mind().mood().name().toLowerCase(Locale.ROOT)
                     + (npc.fakePlayer() ? ", player" : ", mannequin") + "]",
                     NamedTextColor.WHITE));
         }

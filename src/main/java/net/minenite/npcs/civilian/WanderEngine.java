@@ -52,6 +52,21 @@ public final class WanderEngine {
         npc.beginWalk(here, via, dest, ticks);
     }
 
+    public static void planToward(CivilianNpc npc, Location here, Location want, double speed) {
+        Location dest = keepXZ(want);
+        if (dest == null) {
+            dest = want.clone();
+        }
+        Vector mid = dest.toVector().subtract(here.toVector()).multiply(0.5);
+        Location via = keepXZ(here.clone().add(mid));
+        if (via == null) {
+            via = here.clone().add(mid);
+        }
+        double length = Math.hypot(dest.getX() - here.getX(), dest.getZ() - here.getZ());
+        int ticks = (int) Math.max(18, length / Math.max(0.08, speed));
+        npc.beginWalk(here, via, dest, ticks);
+    }
+
     /** Snap Y to the floor under this exact XZ — do not jump to block center. */
     public static Location keepXZ(Location at) {
         Double y = floorY(at);

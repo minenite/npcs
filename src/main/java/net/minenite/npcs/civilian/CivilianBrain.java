@@ -2,7 +2,10 @@ package net.minenite.npcs.civilian;
 
 import io.papermc.paper.entity.LookAnchor;
 import net.minenite.npcs.NpcsPlugin;
+import net.minenite.npcs.chat.ConversationDirector;
 import net.minenite.npcs.chat.LlmTalk;
+import net.minenite.npcs.mind.EnvironmentSense;
+import net.minenite.npcs.mind.Mood;
 import net.minenite.warzplugin.WarzPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -22,8 +25,10 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.NamespacedKey;
 import org.bukkit.util.Vector;
 
+import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Supplier;
 
 /**
  * Full person loop: notice, draw, ADS, circle, holster, flinch, cover, inspect.
@@ -34,12 +39,17 @@ public final class CivilianBrain {
     private final LlmTalk talk;
     private final GunPoseBridge poses;
     private final EquipmentPackets equipment;
+    private final ConversationDirector social;
+    private final Supplier<Collection<CivilianNpc>> roster;
 
-    public CivilianBrain(NpcsPlugin plugin, LlmTalk talk, GunPoseBridge poses, EquipmentPackets equipment) {
+    public CivilianBrain(NpcsPlugin plugin, LlmTalk talk, GunPoseBridge poses, EquipmentPackets equipment,
+                         ConversationDirector social, Supplier<Collection<CivilianNpc>> roster) {
         this.plugin = plugin;
         this.talk = talk;
         this.poses = poses;
         this.equipment = equipment;
+        this.social = social;
+        this.roster = roster;
     }
 
     public void tick(CivilianNpc npc, LivingEntity body) {
@@ -114,6 +124,18 @@ public final class CivilianBrain {
             }
             case SCAN -> scan(npc, body, near);
             case STAND -> standThink(npc, body, near, armed);
+            case TALK -> converse(npc, body);
+            case SHELTER -> {
+                step(npc, body, false);
+                poseGun(npc, body, true, false, false);
+                if (!npc.walking()) {
+                    npc.setState(CivilianNpc.State.STAND);
+                    npc.setIdleLeft(70 + ThreadLocalRandom.current().nextInt(40));
+                    npc.mind().did("got under a roof");
+                }
+            }
+            case FOLLOW -> follow(npc, body);
+            case MOURN -> mourn(npc, body, near);
         }
         applyLook(body, npc);
     }
@@ -181,9 +203,18 @@ public final class CivilianBrain {
             return;
         }
         npc.markAimSpoken();
+        social.endFor(npc);
+        npc.mind().did("drew on " + aimer.getName());
+        npc.mind().met(aimer.getUniqueId(), aimer.getName(), -2, "aimed a gun at me");
+        npc.mind().feel(npc.personality().standsGround() ? Mood.ANGRY : Mood.AFRAID, 40);
+        if (talk.street() != null) {
+            talk.street().mark(aimer.getUniqueId(), aimer.getName(), -2,
+                    aimer.getName() + " aimed at " + npc.name(), body.getLocation());
+        }
         talk.aimedAt(npc, aimer);
         if (!npc.personality().standsGround() && ThreadLocalRandom.current().nextInt(3) != 0) {
             backOff(npc, body, aimer);
+            npc.mind().did("backed off from " + aimer.getName());
         }
     }
 
@@ -245,6 +276,15 @@ public final class CivilianBrain {
     }
 
     private void beginHolster(CivilianNpc npc, LivingEntity body) {
+        Player was = npc.aimedBy() == null ? null : Bukkit.getPlayer(npc.aimedBy());
+        if (NpcBodies.realPlayer(was) && npc.aimSpoken()) {
+            npc.mind().feel(Mood.RELIEVED, 25);
+            npc.mind().did(was.getName() + " lowered it");
+            npc.mind().met(was.getUniqueId(), was.getName(), 1, "lowered the gun");
+            if (npc.canTalk()) {
+                talk.relief(npc, was);
+            }
+        }
         npc.setAimedBy(null);
         npc.clearWalk();
         npc.setState(CivilianNpc.State.HOLSTER);
@@ -332,23 +372,44 @@ public final class CivilianBrain {
         poseGun(npc, body, true, false, false);
         npc.decIdle();
         npc.decDecision();
-        if (armed != null && npc.personality().standsGround()) {
+        if (armed != null && (npc.personality().standsGround() || npc.mind().trust(armed.getUniqueId()) < -1
+                || (talk.street() != null && talk.street().trust(armed.getUniqueId()) < -1))) {
             npc.setWatching(armed.getUniqueId());
             npc.setState(CivilianNpc.State.WATCH);
             npc.setIdleLeft(35 + ThreadLocalRandom.current().nextInt(40));
+            npc.mind().saw(armed.getName() + " is armed");
             return;
         }
-        if (near != null && ThreadLocalRandom.current().nextInt(70) == 0) {
+        if (seekShelter(npc, body)) {
+            return;
+        }
+        if (EnvironmentSense.corpseNear(body) && npc.canTalk() && ThreadLocalRandom.current().nextInt(40) == 0) {
+            npc.clearWalk();
+            npc.setState(CivilianNpc.State.MOURN);
+            npc.setMournLeft(45 + ThreadLocalRandom.current().nextInt(25));
+            npc.mind().feel(Mood.GRIEF, 30);
+            npc.mind().saw("a body on the ground");
+            talk.corpse(npc, near);
+            return;
+        }
+        if (near != null && ThreadLocalRandom.current().nextInt(55) == 0) {
             npc.setWatching(near.getUniqueId());
             npc.setState(CivilianNpc.State.WATCH);
             npc.setIdleLeft(25 + ThreadLocalRandom.current().nextInt(35));
-            if (npc.personality().chatty() && npc.canTalk() && ThreadLocalRandom.current().nextInt(3) == 0) {
+            boolean known = npc.mind().knows(near.getUniqueId());
+            if (npc.canTalk() && (known || npc.personality().chatty())
+                    && npc.mind().trust(near.getUniqueId()) >= -1
+                    && ThreadLocalRandom.current().nextInt(known ? 2 : 4) == 0) {
                 talk.ambient(npc, near);
             }
             return;
         }
         npc.idleGlance();
         if (npc.idleLeft() > 0) {
+            return;
+        }
+        if (npc.mind().mood() == Mood.LONELY && ThreadLocalRandom.current().nextBoolean()) {
+            npc.setIdleLeft(30);
             return;
         }
         int roll = ThreadLocalRandom.current().nextInt(12);
@@ -366,6 +427,9 @@ public final class CivilianBrain {
             npc.setState(CivilianNpc.State.COVER);
             npc.setCoverLeft(25 + ThreadLocalRandom.current().nextInt(30));
             return;
+        }
+        if (roll == 3 && body.getWorld().hasStorm() && npc.canTalk()) {
+            talk.weather(npc, near);
         }
         startWalk(npc, body, false);
     }
@@ -420,26 +484,131 @@ public final class CivilianBrain {
     private void onGunshot(CivilianNpc npc, LivingEntity body, Player shooter) {
         npc.remember(shooter.getUniqueId());
         npc.lookToward(body.getEyeLocation(), shooter.getEyeLocation(), 0.28f, 0.12f);
+        social.endFor(npc);
+        npc.mind().saw("shots from " + shooter.getName());
+        npc.mind().feel(Mood.AFRAID, 20);
+        if (talk.street() != null) {
+            talk.street().hear(body.getLocation(), "shots near " + npc.name() + " — " + shooter.getName());
+        }
         if (npc.personality().panicsAtShots() && ThreadLocalRandom.current().nextBoolean()) {
             npc.setFleeLeft(50 + ThreadLocalRandom.current().nextInt(40));
             startWalk(npc, body, true);
+            npc.mind().did("ran from shots");
             return;
         }
         npc.setState(CivilianNpc.State.FLINCH);
         npc.setFlinchLeft(8 + ThreadLocalRandom.current().nextInt(8));
         if (npc.canTalk() && ThreadLocalRandom.current().nextInt(3) == 0) {
-            talk.aimedAt(npc, shooter);
+            talk.shots(npc, shooter);
         }
     }
 
     public void hurt(CivilianNpc npc, LivingEntity body, Player from) {
         npc.setState(CivilianNpc.State.FLINCH);
         npc.setFlinchLeft(10 + ThreadLocalRandom.current().nextInt(8));
+        social.endFor(npc);
         if (from != null) {
             npc.setAimedBy(from.getUniqueId());
             npc.remember(from.getUniqueId());
+            npc.mind().did("got hit by " + from.getName());
+            npc.mind().met(from.getUniqueId(), from.getName(), -3, "shot me");
+            npc.mind().feel(Mood.ANGRY, 40);
+            if (talk.street() != null) {
+                talk.street().mark(from.getUniqueId(), from.getName(), -3,
+                        from.getName() + " shot " + npc.name(), body.getLocation());
+            }
+            if (npc.canTalk()) {
+                talk.hurt(npc, from);
+            }
         }
         poseGun(npc, body, true, true, false);
+    }
+
+    private void converse(CivilianNpc npc, LivingEntity body) {
+        HumanMotor.plant(body);
+        poseGun(npc, body, true, false, false);
+        npc.decTalk();
+        CivilianNpc other = find(npc.talkingTo());
+        if (other != null && other.body() != null) {
+            npc.lookToward(body.getEyeLocation(), other.body().getEyeLocation(), 0.22f, 0.12f);
+        } else {
+            npc.idleGlance();
+        }
+        if (npc.talkLeft() <= 0) {
+            npc.setTalkingTo(null);
+            npc.setState(CivilianNpc.State.STAND);
+            npc.setIdleLeft(20);
+        }
+    }
+
+    private void follow(CivilianNpc npc, LivingEntity body) {
+        npc.decFollow();
+        poseGun(npc, body, true, false, false);
+        CivilianNpc lead = find(npc.following());
+        if (lead == null || lead.body() == null || npc.followLeft() <= 0) {
+            npc.setFollowing(null);
+            npc.clearWalk();
+            npc.setState(CivilianNpc.State.STAND);
+            npc.setIdleLeft(20 + ThreadLocalRandom.current().nextInt(30));
+            return;
+        }
+        Location dest = lead.body().getLocation();
+        npc.lookToward(body.getEyeLocation(), lead.body().getEyeLocation(), 0.18f, 0.10f);
+        if (body.getLocation().distanceSquared(dest) > 3.4 * 3.4) {
+            if (!npc.walking() || npc.stuck(body.getLocation())) {
+                WanderEngine.planToward(npc, body.getLocation(), dest, 0.21);
+                npc.setState(CivilianNpc.State.FOLLOW);
+            }
+            step(npc, body, false);
+        } else {
+            HumanMotor.plant(body);
+            npc.clearWalk();
+        }
+    }
+
+    private void mourn(CivilianNpc npc, LivingEntity body, Player near) {
+        npc.decMourn();
+        HumanMotor.plant(body);
+        poseGun(npc, body, true, false, false);
+        npc.lookToward(body.getEyeLocation(), body.getLocation().clone().add(0, 0.2, 0), 0.08f, 0.04f);
+        if (npc.mournLeft() <= 0) {
+            npc.setState(CivilianNpc.State.WARY);
+            npc.setWaryLeft(40);
+        }
+    }
+
+    private boolean seekShelter(CivilianNpc npc, LivingEntity body) {
+        if (!body.getWorld().hasStorm() && !body.getWorld().isThundering()) {
+            return false;
+        }
+        if (EnvironmentSense.roofed(body.getLocation())) {
+            return false;
+        }
+        if (ThreadLocalRandom.current().nextInt(18) != 0) {
+            return false;
+        }
+        Location roof = EnvironmentSense.shelterNear(body.getLocation());
+        if (roof == null) {
+            return false;
+        }
+        npc.setState(CivilianNpc.State.SHELTER);
+        WanderEngine.planToward(npc, body.getLocation(), roof, 0.22);
+        npc.setState(CivilianNpc.State.SHELTER);
+        npc.mind().did("looked for a roof in the rain");
+        npc.mind().feel(Mood.TIRED, 20);
+        return true;
+    }
+
+    private CivilianNpc find(UUID id) {
+        if (id == null) {
+            return null;
+        }
+        for (CivilianNpc npc : roster.get()) {
+            if (npc.id().equals(id)) {
+                return npc;
+            }
+        }
+        return null;
     }
 
     private void startWalk(CivilianNpc npc, LivingEntity body, boolean flee) {

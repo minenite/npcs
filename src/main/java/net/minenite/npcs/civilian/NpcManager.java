@@ -4,7 +4,10 @@ import com.destroystokyo.paper.profile.PlayerProfile;
 import io.papermc.paper.datacomponent.item.ResolvableProfile;
 import net.kyori.adventure.text.Component;
 import net.minenite.npcs.NpcsPlugin;
+import net.minenite.npcs.chat.ConversationDirector;
 import net.minenite.npcs.chat.LlmTalk;
+import net.minenite.npcs.mind.Mood;
+import net.minenite.npcs.mind.WorldMemory;
 import net.minenite.npcs.corpse.CorpseOpen;
 import net.minenite.npcs.corpse.CorpseSpawner;
 import net.minenite.npcs.skin.SkinService;
@@ -41,6 +44,8 @@ public final class NpcManager implements Listener {
     private final NpcsPlugin plugin;
     private final SkinService skins;
     private final LlmTalk talk;
+    private final ConversationDirector social;
+    private final WorldMemory street;
     private final TabListPackets tab;
     private final LoadoutService loadouts;
     private final CorpseSpawner corpses;
@@ -51,17 +56,20 @@ public final class NpcManager implements Listener {
     private final Map<UUID, CivilianNpc> byId = new ConcurrentHashMap<>();
     private BukkitTask tick;
 
-    public NpcManager(NpcsPlugin plugin, SkinService skins, LlmTalk talk, TabListPackets tab) {
+    public NpcManager(NpcsPlugin plugin, SkinService skins, LlmTalk talk, TabListPackets tab,
+                     ConversationDirector social, WorldMemory street) {
         this.plugin = plugin;
         this.skins = skins;
         this.talk = talk;
+        this.social = social;
+        this.street = street;
         this.tab = tab;
         this.loadouts = new LoadoutService(plugin);
         CorpseOpen opens = new CorpseOpen(plugin);
         this.corpses = new CorpseSpawner(plugin, opens);
         this.poses = new GunPoseBridge(plugin);
         this.equipment = new EquipmentPackets(plugin);
-        this.brain = new CivilianBrain(plugin, talk, poses, equipment);
+        this.brain = new CivilianBrain(plugin, talk, poses, equipment, social, this::all);
         this.npcKey = NpcBodies.key();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
         plugin.getServer().getPluginManager().registerEvents(opens, plugin);
@@ -99,6 +107,9 @@ public final class NpcManager implements Listener {
         Location place = spawnAt;
         LivingEntity body = spawnMannequin(place, id, name, profile, kit);
         npc.bind(body, false);
+        npc.mind().did("arrived at " + place.getBlockX() + " " + place.getBlockZ());
+        npc.mind().feel(Mood.WARY, 20);
+        street.hear(place, name + " is on the road");
         plugin.getLogger().info("Civilian " + name + " spawned at "
                 + place.getBlockX() + "," + place.getBlockY() + "," + place.getBlockZ());
         byId.put(id, npc);
@@ -253,6 +264,7 @@ public final class NpcManager implements Listener {
     }
 
     private void tick() {
+        social.tick();
         for (CivilianNpc npc : List.copyOf(byId.values())) {
             if (!npc.alive()) {
                 continue;
@@ -308,9 +320,6 @@ public final class NpcManager implements Listener {
         if (body != null) {
             brain.hurt(npc, body, killer);
         }
-        if (killer != null && npc.canTalk()) {
-            talk.aimedAt(npc, killer);
-        }
     }
 
     @EventHandler
@@ -340,8 +349,14 @@ public final class NpcManager implements Listener {
         }
         Location at = body.getLocation();
         npc.markDead();
+        social.endFor(npc);
         if (killer != null) {
+            npc.mind().did("dying because of " + killer.getName());
+            street.mark(killer.getUniqueId(), killer.getName(), -4,
+                    killer.getName() + " killed " + npc.name(), at);
             talk.dying(npc, killer);
+        } else {
+            street.hear(at, npc.name() + " is dead");
         }
         poses.clear(npc.id());
         poses.clear(body.getUniqueId());

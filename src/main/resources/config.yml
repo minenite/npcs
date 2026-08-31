@@ -1,14 +1,15 @@
 # Skin applied to every civilian (Mojang username). Cached after first fetch.
 skin-username: DirtyCivilian
 
-# Spoken lines are instant personality text. Ollama is not on the first line
-# anymore — waiting on the model made talk late and then repeat itself.
+# Local Ollama writes every line. Memory + what they can see goes into the prompt.
+# llama3.1:8b is the conversational model on this machine.
 llm:
+  enabled: true
   endpoint: http://127.0.0.1:11434/api/chat
-  model: phi3:mini
-  timeout-ms: 1200
-  max-tokens: 40
-  temperature: 0.9
+  model: llama3.1:8b
+  timeout-ms: 8000
+  max-tokens: 70
+  temperature: 0.88
 
 civilian:
   health: 16
@@ -19,7 +20,7 @@ civilian:
   idle-ticks-max: 140
   aim-range: 48
   aim-dot: 0.86
-  talk-cooldown-ms: 8000
+  talk-cooldown-ms: 2200
   pistols:
     - m9
     - usp45
