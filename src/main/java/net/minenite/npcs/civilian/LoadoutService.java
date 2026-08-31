@@ -29,6 +29,7 @@ public final class LoadoutService {
     public Kit roll() {
         WarzPlugin warz = warz();
         if (warz == null || warz.items() == null || warz.registry() == null) {
+            plugin.getLogger().warning("WarzPlugin items missing — civilians will have no pistol.");
             return new Kit(new ItemStack(Material.WOODEN_HOE), null, null, List.of());
         }
         List<String> ids = plugin.getConfig().getStringList("civilian.pistols");
@@ -49,6 +50,7 @@ public final class LoadoutService {
         String gunId = present.get(rng.nextInt(present.size()));
         var def = warz.registry().get(gunId).orElseThrow();
         ItemStack gun = warz.items().create(def, 1);
+        plugin.getLogger().info("Kit pistol " + gunId + " as " + gun.getType());
         var magType = magFor(gunId);
         String round = roundFor(magType);
         ItemStack mag = warz.items().createMagazine(magType, magType.capacity(), round, 1);

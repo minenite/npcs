@@ -45,6 +45,7 @@ public final class NpcManager implements Listener {
     private final LoadoutService loadouts;
     private final CorpseSpawner corpses;
     private final GunPoseBridge poses;
+    private final EquipmentPackets equipment;
     private final CivilianBrain brain;
     private final NamespacedKey npcKey;
     private final Map<UUID, CivilianNpc> byId = new ConcurrentHashMap<>();
@@ -59,7 +60,8 @@ public final class NpcManager implements Listener {
         CorpseOpen opens = new CorpseOpen(plugin);
         this.corpses = new CorpseSpawner(plugin, opens);
         this.poses = new GunPoseBridge(plugin);
-        this.brain = new CivilianBrain(plugin, talk, poses);
+        this.equipment = new EquipmentPackets(plugin);
+        this.brain = new CivilianBrain(plugin, talk, poses, equipment);
         this.npcKey = NpcBodies.key();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
         plugin.getServer().getPluginManager().registerEvents(opens, plugin);
@@ -95,7 +97,7 @@ public final class NpcManager implements Listener {
             spawnAt = at.clone();
         }
         Location place = spawnAt;
-        LivingEntity body = spawnMannequin(place, id, name, profile);
+        LivingEntity body = spawnMannequin(place, id, name, profile, kit);
         npc.bind(body, false);
         plugin.getLogger().info("Civilian " + name + " spawned at "
                 + place.getBlockX() + "," + place.getBlockY() + "," + place.getBlockZ());
@@ -106,6 +108,8 @@ public final class NpcManager implements Listener {
                 return;
             }
             putGun(spawned, kit);
+            plugin.getLogger().info("Civilian " + name + " hand="
+                    + (kit.gun() == null ? "empty" : kit.gun().getType() + " " + display(kit.gun())));
             poses.set(spawned.getUniqueId(), true, false);
             if (!spawned.getUniqueId().equals(id)) {
                 poses.set(id, true, false);
@@ -120,7 +124,8 @@ public final class NpcManager implements Listener {
         return npc;
     }
 
-    private Mannequin spawnMannequin(Location place, UUID id, String name, PlayerProfile profile) {
+    private Mannequin spawnMannequin(Location place, UUID id, String name, PlayerProfile profile,
+                                    LoadoutService.Kit kit) {
         return place.getWorld().spawn(place, Mannequin.class, mannequin -> {
             mannequin.setPersistent(false);
             mannequin.setRemoveWhenFarAway(false);
@@ -156,6 +161,17 @@ public final class NpcManager implements Listener {
             mannequin.setHealth(Math.min(mannequin.getMaxHealth(),
                     plugin.getConfig().getDouble("civilian.health", 16)));
             mark(mannequin, id);
+            if (kit.gun() != null) {
+                EntityEquipment eq = mannequin.getEquipment();
+                if (eq != null) {
+                    eq.setItemInMainHand(heldPistol(kit.gun(), false));
+                    eq.setItemInOffHand(null);
+                    try {
+                        eq.setDropChance(EquipmentSlot.HAND, 0f);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
         });
     }
 
@@ -173,16 +189,41 @@ public final class NpcManager implements Listener {
         if (kit.gun() == null) {
             return;
         }
+        org.bukkit.inventory.ItemStack gun = heldPistol(kit.gun(), false);
         if (body instanceof Player player) {
-            player.getInventory().setItemInMainHand(kit.gun().clone());
+            player.getInventory().setItemInMainHand(gun);
             player.getInventory().setItemInOffHand(null);
             player.updateInventory();
         }
-        EntityEquipment equipment = body.getEquipment();
-        if (equipment != null) {
-            equipment.setItem(EquipmentSlot.HAND, kit.gun().clone());
-            equipment.setItem(EquipmentSlot.OFF_HAND, null);
+        EntityEquipment hands = body.getEquipment();
+        if (hands != null) {
+            hands.setItemInMainHand(gun);
+            hands.setItemInOffHand(null);
         }
+        this.equipment.hands(body, gun, null);
+    }
+
+    static org.bukkit.inventory.ItemStack heldPistol(org.bukkit.inventory.ItemStack gun, boolean aim) {
+        if (gun == null) {
+            return null;
+        }
+        org.bukkit.inventory.ItemStack copy = gun.clone();
+        org.bukkit.inventory.meta.ItemMeta meta = copy.getItemMeta();
+        if (meta != null) {
+            meta.getPersistentDataContainer().set(new NamespacedKey("pvpgunminus", "npc_hold"),
+                    PersistentDataType.BYTE, (byte) 1);
+            meta.getPersistentDataContainer().set(new NamespacedKey("pvpgunminus", "npc_ads"),
+                    PersistentDataType.BYTE, (byte) (aim ? 1 : 0));
+            copy.setItemMeta(meta);
+        }
+        return copy;
+    }
+
+    private static String display(org.bukkit.inventory.ItemStack stack) {
+        if (stack.hasItemMeta() && stack.getItemMeta().hasDisplayName()) {
+            return String.valueOf(stack.getItemMeta().displayName());
+        }
+        return stack.getType().name();
     }
 
     public int removeNear(Location at, double range) {
@@ -235,9 +276,12 @@ public final class NpcManager implements Listener {
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
             tab.showAll(event.getPlayer(), all());
             poses.syncViewer(event.getPlayer());
+            equipment.syncViewer(event.getPlayer(), all());
         }, 15L);
-        plugin.getServer().getScheduler().runTaskLater(plugin, () ->
-                poses.syncViewer(event.getPlayer()), 40L);
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            poses.syncViewer(event.getPlayer());
+            equipment.syncViewer(event.getPlayer(), all());
+        }, 40L);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)

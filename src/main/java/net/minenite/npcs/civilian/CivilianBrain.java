@@ -33,18 +33,20 @@ public final class CivilianBrain {
     private final NpcsPlugin plugin;
     private final LlmTalk talk;
     private final GunPoseBridge poses;
+    private final EquipmentPackets equipment;
 
-    public CivilianBrain(NpcsPlugin plugin, LlmTalk talk, GunPoseBridge poses) {
+    public CivilianBrain(NpcsPlugin plugin, LlmTalk talk, GunPoseBridge poses, EquipmentPackets equipment) {
         this.plugin = plugin;
         this.talk = talk;
         this.poses = poses;
+        this.equipment = equipment;
     }
 
     public void tick(CivilianNpc npc, LivingEntity body) {
         keepHuman(body);
-        if (npc.dueEquip()) {
-            holdPistol(body, npc, npc.state() == CivilianNpc.State.AIM
-                    || npc.state() == CivilianNpc.State.CIRCLE);
+        boolean aiming = npc.state() == CivilianNpc.State.AIM || npc.state() == CivilianNpc.State.CIRCLE;
+        if (npc.dueEquip() || emptyHand(body)) {
+            holdPistol(body, npc, aiming);
         }
         if (npc.duePoseRefresh()) {
             poses.refresh();
@@ -120,8 +122,12 @@ public final class CivilianBrain {
         boolean ads = playerAiming(aimer);
         npc.setAimedBy(aimer.getUniqueId());
         npc.addNotice();
-        npc.lookToward(body.getEyeLocation(), aimer.getEyeLocation(), ads ? 0.32f : 0.20f, ads ? 0.16f : 0.09f);
-        int need = Math.max(1, npc.personality().noticeDelayTicks() / (ads ? 2 : 1));
+        npc.lookToward(body.getEyeLocation(), aimer.getEyeLocation(), ads ? 0.42f : 0.22f, ads ? 0.22f : 0.10f);
+        if (ads) {
+            snapAim(npc, body, aimer);
+            return;
+        }
+        int need = Math.max(1, npc.personality().noticeDelayTicks());
         if (npc.remembered(aimer.getUniqueId())) {
             need = 1;
         }
@@ -151,15 +157,33 @@ public final class CivilianBrain {
             npc.setState(CivilianNpc.State.DRAW);
             npc.setDrawLeft(npc.personality().drawDelayTicks());
             poseGun(npc, body, true, false, true);
-            body.getWorld().playSound(body.getLocation(), Sound.ITEM_ARMOR_EQUIP_LEATHER, 0.35f, 1.3f);
+            body.getWorld().playSound(body.getLocation(), Sound.ITEM_ARMOR_EQUIP_LEATHER, 0.45f, 1.25f);
+            warnAimer(npc, body, aimer);
         }
         draw(npc, body);
-        if (!npc.aimSpoken() && npc.canTalk() && npc.drawLeft() <= 2) {
-            npc.markAimSpoken();
-            talk.aimedAt(npc, aimer);
-            if (!npc.personality().standsGround() && ThreadLocalRandom.current().nextBoolean()) {
-                backOff(npc, body, aimer);
-            }
+    }
+
+    private void snapAim(CivilianNpc npc, LivingEntity body, Player aimer) {
+        HumanMotor.plant(body);
+        npc.clearWalk();
+        if (npc.state() != CivilianNpc.State.AIM && npc.state() != CivilianNpc.State.CIRCLE) {
+            npc.setState(CivilianNpc.State.AIM);
+            npc.setDrawLeft(0);
+            body.getWorld().playSound(body.getLocation(), Sound.ITEM_CROSSBOW_LOADING_END, 0.28f, 1.45f);
+            warnAimer(npc, body, aimer);
+        }
+        poseGun(npc, body, true, true, false);
+        npc.aimSway();
+    }
+
+    private void warnAimer(CivilianNpc npc, LivingEntity body, Player aimer) {
+        if (npc.aimSpoken()) {
+            return;
+        }
+        npc.markAimSpoken();
+        talk.aimedAt(npc, aimer);
+        if (!npc.personality().standsGround() && ThreadLocalRandom.current().nextInt(3) != 0) {
+            backOff(npc, body, aimer);
         }
     }
 
@@ -561,6 +585,8 @@ public final class CivilianBrain {
         ItemStack gun = npc.gun().clone();
         ItemMeta meta = gun.getItemMeta();
         if (meta != null) {
+            meta.getPersistentDataContainer().set(new NamespacedKey("pvpgunminus", "npc_hold"),
+                    PersistentDataType.BYTE, (byte) 1);
             meta.getPersistentDataContainer().set(new NamespacedKey("pvpgunminus", "npc_ads"),
                     PersistentDataType.BYTE, (byte) (aim ? 1 : 0));
             gun.setItemMeta(meta);
@@ -569,11 +595,18 @@ public final class CivilianBrain {
             player.getInventory().setItemInMainHand(gun);
             player.getInventory().setItemInOffHand(null);
         }
-        EntityEquipment equipment = body.getEquipment();
-        if (equipment != null) {
-            equipment.setItem(EquipmentSlot.HAND, gun);
-            equipment.setItem(EquipmentSlot.OFF_HAND, null);
+        EntityEquipment hands = body.getEquipment();
+        if (hands != null) {
+            hands.setItemInMainHand(gun);
+            hands.setItemInOffHand(null);
         }
+        this.equipment.hands(body, gun, null);
+    }
+
+    private static boolean emptyHand(LivingEntity body) {
+        EntityEquipment hands = body.getEquipment();
+        return hands == null || hands.getItemInMainHand() == null
+                || hands.getItemInMainHand().getType().isAir();
     }
 
     private void keepHuman(LivingEntity body) {
@@ -626,10 +659,9 @@ public final class CivilianBrain {
     }
 
     private Player aimerOn(LivingEntity body) {
-        double range = plugin.getConfig().getDouble("civilian.aim-range", 48);
-        double need = plugin.getConfig().getDouble("civilian.aim-dot", 0.86);
+        double range = plugin.getConfig().getDouble("civilian.aim-range", 52);
         Player best = null;
-        double bestDot = need;
+        double bestDot = 0.72;
         for (Player player : body.getWorld().getPlayers()) {
             if (!NpcBodies.realPlayer(player) || player.getWorld() != body.getWorld()) {
                 continue;
@@ -653,12 +685,9 @@ public final class CivilianBrain {
             }
             to.multiply(1.0 / dist);
             double dot = dir.dot(to);
-            double needNow = playerAiming(player) ? need - 0.06 : need;
-            if (dot < needNow) {
-                continue;
-            }
-            if (body.getBoundingBox().expand(0.85).rayTrace(eye.toVector(), dir, dist + 2.0) == null
-                    && dot < 0.97) {
+            boolean ads = playerAiming(player);
+            double need = ads ? 0.74 : 0.88;
+            if (dot < need) {
                 continue;
             }
             if (dot < bestDot && best != null) {

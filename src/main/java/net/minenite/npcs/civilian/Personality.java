@@ -198,11 +198,29 @@ public enum Personality {
         return systemPrompt.strip();
     }
 
+    private static final List<String> BACK_OFF = List.of(
+            "Back off.",
+            "Hey. Point that somewhere else.",
+            "Don't. I'm not with you.",
+            "Put it down. Walk away.",
+            "Easy. I don't want this.",
+            "You keep that on me and this gets loud.",
+            "Lower it. I'm a civilian.",
+            "Whoa. That's close enough.",
+            "I see it. Don't.",
+            "Alright. I have one too. Don't make me use it.",
+            "Take a step back. Now.",
+            "That's far enough. Lower the gun."
+    );
+
     public String aimedLine() {
-        return pick(aimedLines, null);
+        return aimedLine(null);
     }
 
     public String aimedLine(String avoid) {
+        if (ThreadLocalRandom.current().nextBoolean()) {
+            return pick(BACK_OFF, avoid);
+        }
         return pick(aimedLines, avoid);
     }
 

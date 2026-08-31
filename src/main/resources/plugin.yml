@@ -1,5 +1,5 @@
 name: npcs
-version: 1.0.5
+version: 1.0.6
 main: net.minenite.npcs.NpcsPlugin
 api-version: '1.21'
 author: icedmoca

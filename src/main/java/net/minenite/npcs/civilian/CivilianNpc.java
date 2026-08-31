@@ -161,7 +161,7 @@ public final class CivilianNpc {
     }
 
     public boolean canTalk() {
-        return System.currentTimeMillis() - lastTalkAt >= 8000L;
+        return System.currentTimeMillis() - lastTalkAt >= 3500L;
     }
 
     public void markTalked(String line) {
@@ -295,7 +295,7 @@ public final class CivilianNpc {
     }
 
     public boolean dueEquip() {
-        return ++equipTicks % 40 == 0;
+        return ++equipTicks % 20 == 0;
     }
 
     public int walkAge() {
