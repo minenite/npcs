@@ -46,7 +46,10 @@ public final class NpcBodies {
             return null;
         }
         Entity entity = Bukkit.getEntity(npc.entityId());
-        return entity instanceof LivingEntity living ? living : null;
+        if (entity instanceof LivingEntity living) {
+            return living;
+        }
+        return npc.body();
     }
 
     public static boolean realPlayer(Player player) {

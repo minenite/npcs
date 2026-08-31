@@ -24,6 +24,7 @@ public final class CivilianNpc {
     private final ItemStack gun;
     private final ItemStack spareMag;
     private UUID entityId;
+    private LivingEntity body;
     private boolean fakePlayer;
     private State state = State.STAND;
     private Location walkFrom;
@@ -112,8 +113,13 @@ public final class CivilianNpc {
         return fakePlayer;
     }
 
+    public LivingEntity body() {
+        return body != null && body.isValid() && !body.isDead() ? body : null;
+    }
+
     public void bind(LivingEntity body, boolean fakePlayer) {
         this.entityId = body.getUniqueId();
+        this.body = body;
         this.fakePlayer = fakePlayer;
         this.lookYaw = body.getLocation().getYaw();
         this.bodyYaw = this.lookYaw;

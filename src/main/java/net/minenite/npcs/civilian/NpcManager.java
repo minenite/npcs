@@ -95,19 +95,10 @@ public final class NpcManager implements Listener {
             spawnAt = at.clone();
         }
         Location place = spawnAt;
-        Player fake = FakePlayerFactory.spawn(plugin, place, id, name, skins.textures());
-        LivingEntity body;
-        boolean fakePlayer;
-        if (fake != null) {
-            mark(fake, id);
-            body = fake;
-            fakePlayer = true;
-        } else {
-            body = spawnMannequin(place, id, name, profile);
-            fakePlayer = false;
-            plugin.getLogger().warning("Civilian " + name + " fell back to a mannequin body.");
-        }
-        npc.bind(body, fakePlayer);
+        LivingEntity body = spawnMannequin(place, id, name, profile);
+        npc.bind(body, false);
+        plugin.getLogger().info("Civilian " + name + " spawned at "
+                + place.getBlockX() + "," + place.getBlockY() + "," + place.getBlockZ());
         byId.put(id, npc);
         LivingEntity spawned = body;
         plugin.getServer().getScheduler().runTask(plugin, () -> {
