@@ -12,11 +12,11 @@ llm:
 
 civilian:
   health: 16
-  walk-speed: 0.11
+  walk-speed: 0.20
   wander-min: 4
   wander-max: 11
-  idle-ticks-min: 50
-  idle-ticks-max: 180
+  idle-ticks-min: 35
+  idle-ticks-max: 140
   aim-range: 48
   aim-dot: 0.86
   talk-cooldown-ms: 8000

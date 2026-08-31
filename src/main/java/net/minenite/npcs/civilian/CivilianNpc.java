@@ -59,6 +59,11 @@ public final class CivilianNpc {
     private UUID rememberedAimer;
     private long rememberUntil;
     private int poseRefresh;
+    private int walkAge;
+    private int stuckTicks;
+    private Location lastPos;
+    private int turnLeft;
+    private float turnYaw;
 
     public CivilianNpc(UUID id, String name, Personality personality, SkinService.Textures textures,
                        ItemStack gun, ItemStack spareMag, List<ItemStack> extras) {
@@ -284,7 +289,50 @@ public final class CivilianNpc {
     }
 
     public boolean dueEquip() {
-        return ++equipTicks % 8 == 0;
+        return ++equipTicks % 40 == 0;
+    }
+
+    public int walkAge() {
+        return ++walkAge;
+    }
+
+    public boolean stuck(Location here) {
+        if (lastPos == null || lastPos.getWorld() != here.getWorld()) {
+            lastPos = here.clone();
+            stuckTicks = 0;
+            return false;
+        }
+        if (here.distanceSquared(lastPos) < 0.04) {
+            stuckTicks++;
+        } else {
+            stuckTicks = 0;
+            lastPos = here.clone();
+        }
+        return stuckTicks > 22;
+    }
+
+    public void clearStuck() {
+        stuckTicks = 0;
+        lastPos = null;
+    }
+
+    public void beginTurn(float yaw, int ticks) {
+        this.turnYaw = yaw;
+        this.turnLeft = Math.max(4, ticks);
+    }
+
+    public boolean turning() {
+        if (turnLeft <= 0) {
+            return false;
+        }
+        turnLeft--;
+        bodyYaw = lerpYaw(bodyYaw, turnYaw, 0.28f);
+        lookYaw = lerpYaw(lookYaw, turnYaw, 0.18f);
+        return turnLeft > 0;
+    }
+
+    public void turnBody(float yaw, float rate) {
+        bodyYaw = lerpYaw(bodyYaw, yaw, rate);
     }
 
     public boolean duePoseRefresh() {
@@ -383,12 +431,24 @@ public final class CivilianNpc {
         }
     }
 
+    public Location walkDest() {
+        return walkTo;
+    }
+
     public void beginWalk(Location from, Location via, Location to, int ticks) {
         this.walkFrom = from.clone();
-        this.walkVia = via.clone();
+        this.walkVia = via != null ? via.clone() : to.clone();
         this.walkTo = to.clone();
         this.walkTicks = 0;
         this.walkMax = Math.max(18, ticks);
+        clearStuck();
+        Vector delta = to.toVector().subtract(from.toVector());
+        if (delta.lengthSquared() > 0.04) {
+            float yaw = yawOf(delta);
+            if (Math.abs(wrap(yaw - bodyYaw)) > 55f) {
+                beginTurn(yaw, 8 + (int) (Math.abs(wrap(yaw - bodyYaw)) / 18f));
+            }
+        }
         if (state != State.CIRCLE && state != State.BACKPEDAL && state != State.FLEE) {
             this.state = State.WALK;
         }

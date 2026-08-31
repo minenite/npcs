@@ -2,7 +2,6 @@ package net.minenite.npcs.tab;
 
 import net.minenite.npcs.NpcsPlugin;
 import net.minenite.npcs.civilian.CivilianNpc;
-import net.minenite.npcs.skin.SkinService;
 import org.bukkit.entity.Player;
 
 import java.lang.reflect.Constructor;
@@ -80,20 +79,7 @@ public final class TabListPackets {
             Class<?> profileClass = Class.forName("com.mojang.authlib.GameProfile");
             Class<?> propertyClass = Class.forName("com.mojang.authlib.properties.Property");
 
-            Object profile = profileClass.getConstructor(UUID.class, String.class)
-                    .newInstance(npc.id(), npc.name());
-            SkinService.Textures skin = npc.textures();
-            if (skin != null && skin.value() != null) {
-                Object properties = profileClass.getMethod("properties").invoke(profile);
-                Object property = skin.signature() == null
-                        ? propertyClass.getConstructor(String.class, String.class)
-                        .newInstance("textures", skin.value())
-                        : propertyClass.getConstructor(String.class, String.class, String.class)
-                        .newInstance("textures", skin.value(), skin.signature());
-                // PropertyMap is a Multimap; put(key, value) works on Guava and authlib maps.
-                Method put = findPut(properties.getClass());
-                put.invoke(properties, "textures", property);
-            }
+            Object profile = net.minenite.npcs.civilian.Profiles.gameProfile(npc.id(), npc.name(), npc.textures());
 
             Object survival = Enum.valueOf(gameTypeClass.asSubclass(Enum.class), "SURVIVAL");
             Object display = componentClass.getMethod("literal", String.class).invoke(null, npc.name());
@@ -120,7 +106,9 @@ public final class TabListPackets {
         } catch (Exception failed) {
             if (!warned) {
                 warned = true;
-                plugin.getLogger().warning("Could not build tab ADD packet: " + failed.getMessage());
+                plugin.getLogger().warning("Could not build tab ADD packet: "
+                        + failed.getClass().getSimpleName() + ": " + failed.getMessage());
+                failed.printStackTrace();
             }
             return null;
         }

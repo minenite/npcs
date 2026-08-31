@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'net.minenite.npcs'
-version = '1.0.3'
+version = '1.0.4'
 base { archivesName = 'npcs' }
 
 repositories {

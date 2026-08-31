@@ -27,7 +27,7 @@ public final class FakePlayerFactory {
         try {
             Object nmsServer = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
             Object nmsLevel = at.getWorld().getClass().getMethod("getHandle").invoke(at.getWorld());
-            Object profile = profile(id, clip(name), skin);
+            Object profile = Profiles.gameProfile(id, name, skin);
 
             Class<?> infoClass = Class.forName("net.minecraft.server.level.ClientInformation");
             Object info = infoClass.getMethod("createDefault").invoke(null);
@@ -71,28 +71,6 @@ public final class FakePlayerFactory {
             plugin.getLogger().log(Level.WARNING, "Fake player spawn failed for " + name, failed);
             return null;
         }
-    }
-
-    private static Object profile(UUID id, String name, SkinService.Textures skin) throws Exception {
-        Class<?> profileClass = Class.forName("com.mojang.authlib.GameProfile");
-        Class<?> propertyClass = Class.forName("com.mojang.authlib.properties.Property");
-        Object profile = profileClass.getConstructor(UUID.class, String.class).newInstance(id, name);
-        if (skin == null || skin.value() == null) {
-            return profile;
-        }
-        Object properties = profileClass.getMethod("properties").invoke(profile);
-        Object property = skin.signature() == null
-                ? propertyClass.getConstructor(String.class, String.class)
-                .newInstance("textures", skin.value())
-                : propertyClass.getConstructor(String.class, String.class, String.class)
-                .newInstance("textures", skin.value(), skin.signature());
-        for (Method method : properties.getClass().getMethods()) {
-            if (method.getName().equals("put") && method.getParameterCount() == 2) {
-                method.invoke(properties, "textures", property);
-                break;
-            }
-        }
-        return profile;
     }
 
     private static void attachDummyConnection(NpcsPlugin plugin, Object nmsServer, Object nmsPlayer, Object profile) {

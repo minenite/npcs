@@ -14,9 +14,12 @@ import org.bukkit.entity.Pose;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.NamespacedKey;
 import org.bukkit.util.Vector;
 
 import java.util.UUID;
@@ -40,7 +43,8 @@ public final class CivilianBrain {
     public void tick(CivilianNpc npc, LivingEntity body) {
         keepHuman(body);
         if (npc.dueEquip()) {
-            holdPistol(body, npc);
+            holdPistol(body, npc, npc.state() == CivilianNpc.State.AIM
+                    || npc.state() == CivilianNpc.State.CIRCLE);
         }
         if (npc.duePoseRefresh()) {
             poses.refresh();
@@ -188,6 +192,7 @@ public final class CivilianBrain {
     }
 
     private void aimHold(CivilianNpc npc, LivingEntity body) {
+        HumanMotor.plant(body);
         if (npc.aimedBy() != null) {
             Player still = Bukkit.getPlayer(npc.aimedBy());
             if (NpcBodies.realPlayer(still)) {
@@ -416,11 +421,11 @@ public final class CivilianBrain {
     private void startWalk(CivilianNpc npc, LivingEntity body, boolean flee) {
         double min = plugin.getConfig().getDouble("civilian.wander-min", 4);
         double max = plugin.getConfig().getDouble("civilian.wander-max", 11);
-        double speed = plugin.getConfig().getDouble("civilian.walk-speed", 0.11);
+        double speed = plugin.getConfig().getDouble("civilian.walk-speed", 0.20);
         if (flee) {
             min = 8;
             max = 16;
-            speed = 0.19;
+            speed = 0.28;
         }
         WanderEngine.plan(npc, body.getLocation(), min, max, speed);
         if (npc.state() != CivilianNpc.State.WALK && !flee) {
@@ -467,24 +472,33 @@ public final class CivilianBrain {
     }
 
     private void step(CivilianNpc npc, LivingEntity body, boolean backpedal) {
-        Location next = npc.stepWalk();
-        if (next == null) {
+        if (npc.turning()) {
+            HumanMotor.plant(body);
+            HumanMotor.face(body, npc);
             return;
         }
-        Location use = WanderEngine.keepXZ(next);
-        if (use == null) {
-            use = next;
+        Location dest = npc.walkDest();
+        if (dest == null) {
+            HumanMotor.plant(body);
+            return;
         }
-        float yaw = backpedal || npc.state() == CivilianNpc.State.CIRCLE || npc.state() == CivilianNpc.State.AIM
-                ? npc.lookYaw() : npc.bodyYaw();
-        use.setYaw(yaw);
-        use.setPitch(npc.lookPitch());
-        body.teleport(use);
-        if (body instanceof Player player) {
-            Vector vel = use.toVector().subtract(body.getLocation().toVector());
-            vel.setY(0);
-            if (vel.lengthSquared() > 1.0e-6) {
-                player.setVelocity(vel.multiply(0.08));
+        double speed = plugin.getConfig().getDouble("civilian.walk-speed", 0.20);
+        if (npc.state() == CivilianNpc.State.FLEE) {
+            speed = 0.28;
+        } else if (npc.state() == CivilianNpc.State.BACKPEDAL) {
+            speed = 0.14;
+        } else if (npc.state() == CivilianNpc.State.CIRCLE) {
+            speed = 0.16;
+        }
+        speed *= npc.personality().walkMul();
+        boolean arrived = HumanMotor.walkToward(body, npc, dest, speed, backpedal);
+        if (arrived || npc.stuck(body.getLocation())) {
+            npc.clearWalk();
+            npc.clearStuck();
+            HumanMotor.plant(body);
+            if (npc.state() == CivilianNpc.State.WALK) {
+                npc.setState(CivilianNpc.State.STAND);
+                npc.setIdleLeft(20 + ThreadLocalRandom.current().nextInt(55));
             }
         }
     }
@@ -498,7 +512,11 @@ public final class CivilianBrain {
     }
 
     private void poseGun(CivilianNpc npc, LivingEntity body, boolean gun, boolean aim, boolean hipRaise) {
-        holdPistol(body, npc);
+        byte flags = (byte) ((gun ? 1 : 0) | (aim ? 2 : 0) | (hipRaise ? 4 : 0));
+        if (npc.poseFlags() != flags) {
+            npc.setPoseFlags(flags);
+            holdPistol(body, npc, aim);
+        }
         standUnlocked(body);
         if (gun) {
             body.addScoreboardTag("pgm_gun");
@@ -536,15 +554,20 @@ public final class CivilianBrain {
         }
     }
 
-    private void holdPistol(LivingEntity body, CivilianNpc npc) {
+    private void holdPistol(LivingEntity body, CivilianNpc npc, boolean aim) {
         if (npc.gun() == null) {
             return;
         }
         ItemStack gun = npc.gun().clone();
+        ItemMeta meta = gun.getItemMeta();
+        if (meta != null) {
+            meta.getPersistentDataContainer().set(new NamespacedKey("pvpgunminus", "npc_ads"),
+                    PersistentDataType.BYTE, (byte) (aim ? 1 : 0));
+            gun.setItemMeta(meta);
+        }
         if (body instanceof Player player) {
             player.getInventory().setItemInMainHand(gun);
             player.getInventory().setItemInOffHand(null);
-            player.updateInventory();
         }
         EntityEquipment equipment = body.getEquipment();
         if (equipment != null) {
@@ -554,13 +577,10 @@ public final class CivilianBrain {
     }
 
     private void keepHuman(LivingEntity body) {
+        HumanMotor.prepare(body);
         standUnlocked(body);
-        body.setGravity(false);
         body.setFireTicks(0);
         if (body instanceof Player player) {
-            player.setSneaking(false);
-            player.setFlying(false);
-            player.setGliding(false);
             player.setFoodLevel(20);
             player.setSaturation(20f);
             player.setExhaustion(0f);

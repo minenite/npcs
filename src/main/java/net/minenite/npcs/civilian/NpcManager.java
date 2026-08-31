@@ -135,8 +135,8 @@ public final class NpcManager implements Listener {
             mannequin.setRemoveWhenFarAway(false);
             mannequin.setInvulnerable(false);
             mannequin.setSilent(false);
-            mannequin.setGravity(false);
-            mannequin.setAI(false);
+            mannequin.setGravity(true);
+            mannequin.setAI(true);
             mannequin.setCollidable(true);
             mannequin.setImmovable(false);
             mannequin.customName(Component.text(name));
@@ -174,6 +174,8 @@ public final class NpcManager implements Listener {
         body.addScoreboardTag("pgm_gun");
         body.setPersistent(false);
         body.setRemoveWhenFarAway(false);
+        body.setGravity(true);
+        body.setAI(true);
     }
 
     private void putGun(LivingEntity body, LoadoutService.Kit kit) {

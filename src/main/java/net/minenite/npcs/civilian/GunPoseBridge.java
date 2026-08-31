@@ -5,7 +5,6 @@ import net.minenite.warzplugin.WarzPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.plugin.messaging.Messenger;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -29,12 +28,9 @@ public final class GunPoseBridge {
 
     public GunPoseBridge(NpcsPlugin plugin) {
         this.plugin = plugin;
-        Messenger messenger = plugin.getServer().getMessenger();
-        messenger.registerOutgoingPluginChannel(plugin, CHANNEL);
     }
 
     public void shutdown() {
-        plugin.getServer().getMessenger().unregisterOutgoingPluginChannel(plugin, CHANNEL);
     }
 
     public void set(UUID id, boolean gun, boolean aim) {
@@ -98,16 +94,13 @@ public final class GunPoseBridge {
         if (payload == null) {
             return;
         }
-        try {
-            viewer.sendPluginMessage(plugin, CHANNEL, payload);
-        } catch (Exception ignored) {
-        }
         WarzPlugin warz = warz();
-        if (warz != null) {
-            try {
-                viewer.sendPluginMessage(warz, CHANNEL, payload);
-            } catch (Exception ignored) {
-            }
+        if (warz == null) {
+            return;
+        }
+        try {
+            viewer.sendPluginMessage(warz, CHANNEL, payload);
+        } catch (Exception ignored) {
         }
     }
 

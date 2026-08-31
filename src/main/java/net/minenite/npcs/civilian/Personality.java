@@ -293,6 +293,15 @@ public enum Personality {
         return this == NERVOUS_SCAV || this == JITTERY_TEEN || this == FRIENDLY_DRUNK || this == RELIGIOUS_SURVIVOR;
     }
 
+    public double walkMul() {
+        return switch (this) {
+            case TIRED_FATHER, STOIC_FARMER, RELIGIOUS_SURVIVOR -> 0.86;
+            case FRIENDLY_DRUNK -> 0.78;
+            case NERVOUS_SCAV, JITTERY_TEEN, PARANOID_LONER -> 1.08;
+            default -> 1.0;
+        };
+    }
+
     private static String pick(List<String> lines, String avoid) {
         if (lines.size() == 1) {
             return lines.get(0);
